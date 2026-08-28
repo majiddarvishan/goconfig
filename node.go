@@ -1,12 +1,18 @@
 package goconfig
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
+	"strings"
 )
 
 type Node struct {
 	value interface{}
+	owner *Manager
+	path  string
 }
 
 type NodeType int
@@ -35,6 +41,11 @@ func (n *Node) Type() NodeType {
 		return Integral
 	case int:
 		return Integral
+	case json.Number:
+		if strings.ContainsAny(string(n.value.(json.Number)), ".eE") {
+			return FloatingPoint
+		}
+		return Integral
 	case float64:
 		return FloatingPoint
 	case string:
@@ -54,7 +65,7 @@ func (n *Node) get() (interface{}, error) {
 	}
 
 	switch v := n.value.(type) {
-	case string, bool, int, int64, float64:
+	case string, bool, int, int64, float64, json.Number:
 		return v, nil
 	case map[string]*Node:
 		return v, nil
@@ -158,8 +169,21 @@ func (n *Node) getInt() (int, error) {
 	case int:
 		return v, nil
 	case int64:
-		return int(v), nil
+		return checkedInt(v)
+	case json.Number:
+		integer, err := v.Int64()
+		if err != nil {
+			return 0, fmt.Errorf("node value %q is not an integer: %w", v, err)
+		}
+		return checkedInt(integer)
 	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) || math.Trunc(v) != v {
+			return 0, fmt.Errorf("node value %v is not an integer", v)
+		}
+		if (strconv.IntSize == 32 && (v < math.MinInt32 || v > math.MaxInt32)) ||
+			(strconv.IntSize == 64 && (v < math.MinInt64 || v >= math.MaxInt64)) {
+			return 0, fmt.Errorf("node value %v overflows int", v)
+		}
 		return int(v), nil
 	default:
 		return 0, fmt.Errorf("node is %T, not numeric", value)
@@ -179,6 +203,12 @@ func (n *Node) getFloat() (float64, error) {
 		return float64(v), nil
 	case int64:
 		return float64(v), nil
+	case json.Number:
+		parsed, err := v.Float64()
+		if err != nil {
+			return 0, fmt.Errorf("invalid numeric node value %q: %w", v, err)
+		}
+		return parsed, nil
 	default:
 		return 0, fmt.Errorf("node is %T, not numeric", value)
 	}
@@ -193,7 +223,11 @@ func (n *Node) GetObject() (map[string]*Node, error) {
 	if !ok {
 		return nil, fmt.Errorf("node is %T, not object", value)
 	}
-	return obj, nil
+	copyObject := make(map[string]*Node, len(obj))
+	for key, node := range obj {
+		copyObject[key] = node
+	}
+	return copyObject, nil
 }
 
 func (n *Node) GetArray() ([]*Node, error) {
@@ -205,7 +239,7 @@ func (n *Node) GetArray() ([]*Node, error) {
 	if !ok {
 		return nil, fmt.Errorf("node is %T, not array", value)
 	}
-	return arr, nil
+	return append([]*Node(nil), arr...), nil
 }
 
 func (n *Node) atString(key string) (*Node, error) {
@@ -266,17 +300,68 @@ func (n *Node) DeepCopy() *Node {
 		for key, node := range v {
 			objCopy[key] = node.DeepCopy()
 		}
-		return &Node{value: objCopy}
+		return &Node{value: objCopy, owner: n.owner, path: n.path}
 
 	case []*Node:
 		arrCopy := make([]*Node, len(v))
 		for i, node := range v {
 			arrCopy[i] = node.DeepCopy()
 		}
-		return &Node{value: arrCopy}
+		return &Node{value: arrCopy, owner: n.owner, path: n.path}
 
 	default:
 		// Primitive types are safe to copy directly
-		return &Node{value: v}
+		return &Node{value: v, owner: n.owner, path: n.path}
 	}
+}
+
+func checkedInt(value int64) (int, error) {
+	if value < int64(minInt()) || value > int64(maxInt()) {
+		return 0, fmt.Errorf("node value %d overflows int", value)
+	}
+	return int(value), nil
+}
+
+func maxInt() int {
+	return int(^uint(0) >> 1)
+}
+
+func minInt() int {
+	return -maxInt() - 1
+}
+
+func bindNodeTree(node *Node, manager *Manager, path string) {
+	segments, err := parseJSONPointer(path)
+	if err != nil {
+		return
+	}
+	bindNodeTreeSegments(node, manager, segments)
+}
+
+func bindNodeTreeSegments(node *Node, manager *Manager, segments []string) {
+	if node == nil {
+		return
+	}
+	node.owner = manager
+	node.path = buildJSONPointer(segments)
+
+	switch value := node.value.(type) {
+	case map[string]*Node:
+		for key, child := range value {
+			childSegments := appendPathSegment(segments, key)
+			bindNodeTreeSegments(child, manager, childSegments)
+		}
+	case []*Node:
+		for index, child := range value {
+			childSegments := appendPathSegment(segments, strconv.Itoa(index))
+			bindNodeTreeSegments(child, manager, childSegments)
+		}
+	}
+}
+
+func appendPathSegment(segments []string, segment string) []string {
+	result := make([]string, len(segments)+1)
+	copy(result, segments)
+	result[len(segments)] = segment
+	return result
 }

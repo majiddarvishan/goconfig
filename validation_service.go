@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
 // validationService provides external configuration validation
 type validationService struct {
+	mu      sync.RWMutex
 	URL     string
 	Timeout time.Duration
 	Headers map[string]string
@@ -50,6 +52,8 @@ func NewvalidationService(url string, timeout time.Duration) *validationService 
 
 // SetHeader sets a custom header for validation requests
 func (vs *validationService) SetHeader(key, value string) {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
 	vs.Headers[key] = value
 }
 
@@ -75,11 +79,19 @@ func (vs *validationService) Validate(ctx context.Context, config, schema interf
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
+	vs.mu.RLock()
+	headers := make(map[string]string, len(vs.Headers))
 	for key, value := range vs.Headers {
+		headers[key] = value
+	}
+	client := vs.client
+	vs.mu.RUnlock()
+
+	for key, value := range headers {
 		httpReq.Header.Set(key, value)
 	}
 
-	resp, err := vs.client.Do(httpReq)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("validation request failed: %w", err)
 	}
@@ -110,6 +122,7 @@ type validatorFunc func(path string, oldValue, newValue *Node) error
 
 // customValidator holds custom validation rules
 type customValidator struct {
+	mu         sync.RWMutex
 	validators map[string][]validatorFunc
 }
 
@@ -122,12 +135,20 @@ func NewCustomValidator() *customValidator {
 
 // AddValidator adds a validation function for a specific path
 func (cv *customValidator) AddValidator(path string, validator validatorFunc) {
+	if validator == nil {
+		return
+	}
+	cv.mu.Lock()
+	defer cv.mu.Unlock()
 	cv.validators[path] = append(cv.validators[path], validator)
 }
 
 // Validate runs all validators for the given path
 func (cv *customValidator) Validate(path string, oldValue, newValue *Node) error {
+	cv.mu.RLock()
 	validators, exists := cv.validators[path]
+	validators = append([]validatorFunc(nil), validators...)
+	cv.mu.RUnlock()
 	if !exists {
 		return nil
 	}

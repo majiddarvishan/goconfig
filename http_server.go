@@ -6,9 +6,11 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"time"
 
@@ -33,8 +35,8 @@ type HttpServer struct {
 	apiKeyHash [32]byte
 	manager    *Manager
 
-	server     *http.Server
-	registrar  RouteRegistrar // <<<<<< NEW
+	server    *http.Server
+	registrar RouteRegistrar
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -284,21 +286,15 @@ func (hs *HttpServer) onPost(w http.ResponseWriter, r *http.Request) {
 	value, hasValue := bodyJSON.Get("value")
 
 	// Version-based optimistic locking (better than hash)
-	var expectedVersion int64
+	var expectedVersion *int64
 	if versionVal, ok := bodyJSON.Get("version"); ok {
-		if versionFloat, ok := versionVal.(float64); ok {
-			expectedVersion = int64(versionFloat)
-		} else {
+		versionFloat, ok := versionVal.(float64)
+		if !ok || math.Trunc(versionFloat) != versionFloat || versionFloat < 0 || versionFloat >= math.MaxInt64 {
 			writeError(w, http.StatusBadRequest, "version must be a number")
 			return
 		}
-
-		currentVersion := hs.manager.Version()
-		if currentVersion != expectedVersion {
-			writeError(w, http.StatusConflict,
-				fmt.Sprintf("version mismatch: expected %d, current %d", expectedVersion, currentVersion))
-			return
-		}
+		version := int64(versionFloat)
+		expectedVersion = &version
 	}
 
 	// Execute operation
@@ -315,8 +311,8 @@ func (hs *HttpServer) onPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := hs.manager.insert(path, index, value); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		if err := hs.manager.mutate(r.Context(), mutationRequest{kind: mutationInsert, path: path, index: index, value: value, expectedVersion: expectedVersion}); err != nil {
+			hs.writeMutationError(w, err)
 			return
 		}
 
@@ -327,8 +323,8 @@ func (hs *HttpServer) onPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := hs.manager.remove(path, index); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		if err := hs.manager.mutate(r.Context(), mutationRequest{kind: mutationRemove, path: path, index: index, expectedVersion: expectedVersion}); err != nil {
+			hs.writeMutationError(w, err)
 			return
 		}
 
@@ -338,8 +334,8 @@ func (hs *HttpServer) onPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := hs.manager.replace(path, value); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		if err := hs.manager.mutate(r.Context(), mutationRequest{kind: mutationReplace, path: path, value: value, expectedVersion: expectedVersion}); err != nil {
+			hs.writeMutationError(w, err)
 			return
 		}
 
@@ -374,35 +370,27 @@ func (hs *HttpServer) onOptions(w http.ResponseWriter) {
 ////////////////////////////////////////////////////////////////////////////////
 
 func (hs *HttpServer) buildConfigState() (*orderedmap.OrderedMap, error) {
-	confJSON := orderedmap.New()
+	snapshot, err := hs.manager.snapshot()
+	if err != nil {
+		return nil, err
+	}
 	schemaJSON := orderedmap.New()
-
-	configStr := hs.manager.Source().getConfig()
-	if configStr == nil {
-		return nil, fmt.Errorf("config is nil")
-	}
-
-	if err := json.Unmarshal([]byte(*configStr), &confJSON); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
-	}
-
-	schemaStr := hs.manager.Source().getSchema()
-	if schemaStr != nil {
-		if err := json.Unmarshal([]byte(*schemaStr), &schemaJSON); err != nil {
+	if snapshot.schema != "" {
+		if err := json.Unmarshal([]byte(snapshot.schema), &schemaJSON); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal schema: %w", err)
 		}
 	}
 
 	paths := orderedmap.New()
-	paths.Set("insertable", hs.manager.getInsertablePaths())
-	paths.Set("removable", hs.manager.getRemovablePaths())
-	paths.Set("replaceable", hs.manager.getReplaceablePaths())
+	paths.Set("insertable", snapshot.insertable)
+	paths.Set("removable", snapshot.removable)
+	paths.Set("replaceable", snapshot.replaceable)
 
 	out := orderedmap.New()
 	out.Set("modifiable_paths", paths)
-	out.Set("config", confJSON)
+	out.Set("config", snapshot.config)
 	out.Set("schema", schemaJSON)
-	out.Set("version", hs.manager.Version())
+	out.Set("version", snapshot.version)
 
 	return out, nil
 }
@@ -470,10 +458,23 @@ func getIndex(m *orderedmap.OrderedMap) (int, error) {
 	if !ok {
 		return 0, fmt.Errorf("'index' must be a number")
 	}
-	if f < 0 {
-		return 0, fmt.Errorf("'index' must be non-negative")
+	if f < 0 || math.Trunc(f) != f || f > float64(maxInt()) {
+		return 0, fmt.Errorf("'index' must be a non-negative integer")
 	}
 	return int(f), nil
+}
+
+func (hs *HttpServer) writeMutationError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrVersionConflict):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, ErrValidation):
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+	case errors.Is(err, ErrPersistence):
+		writeError(w, http.StatusInternalServerError, err.Error())
+	default:
+		writeError(w, http.StatusBadRequest, err.Error())
+	}
 }
 
 func (hs *HttpServer) checkAccess(r *http.Request) bool {

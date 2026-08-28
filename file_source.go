@@ -9,26 +9,31 @@ import (
 	"github.com/iancoleman/orderedmap"
 )
 
-func parseConfig(config []byte) (*orderedmap.OrderedMap, error) {
-	if len(config) == 0 {
-		return nil, fmt.Errorf("config is empty")
-	}
-
-	result := orderedmap.New()
-	err := json.Unmarshal(config, &result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse config: %w", err)
-	}
-
-	return result, nil
-}
-
 type FileSource struct {
 	mu           sync.RWMutex
 	configPath   string
 	configObject *orderedmap.OrderedMap
 	config       string
 	schema       string
+}
+
+// Read implements Source and returns independent configuration bytes.
+func (fs *FileSource) Read() (SourceData, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	return SourceData{
+		Config: append([]byte(nil), fs.config...),
+		Schema: append([]byte(nil), fs.schema...),
+	}, nil
+}
+
+// Write implements Source after verifying that config is a JSON object.
+func (fs *FileSource) Write(config []byte) error {
+	object, err := parseConfig(config)
+	if err != nil {
+		return err
+	}
+	return fs.setConfig(object)
 }
 
 func NewFileSource(configPath string, schema string) (*FileSource, error) {
@@ -57,7 +62,8 @@ func NewFileSource(configPath string, schema string) (*FileSource, error) {
 func (fs *FileSource) getConfigObject() *orderedmap.OrderedMap {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
-	return fs.configObject
+	clone, _ := Clone(fs.configObject)
+	return clone
 }
 
 func (fs *FileSource) getConfig() *string {
@@ -79,7 +85,12 @@ func (fs *FileSource) setConfig(conf *orderedmap.OrderedMap) error {
 		return fmt.Errorf("config cannot be nil")
 	}
 
-	configBytes, err := json.MarshalIndent(conf, "", "  ")
+	ownedConfig, err := Clone(conf)
+	if err != nil {
+		return fmt.Errorf("failed to clone config: %w", err)
+	}
+
+	configBytes, err := json.MarshalIndent(ownedConfig, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
@@ -98,7 +109,7 @@ func (fs *FileSource) setConfig(conf *orderedmap.OrderedMap) error {
 	}
 
 	fs.mu.Lock()
-	fs.configObject = conf
+	fs.configObject = ownedConfig
 	fs.config = string(configBytes)
 	fs.mu.Unlock()
 

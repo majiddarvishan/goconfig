@@ -16,10 +16,33 @@ func validate(conf, schema *string) error {
 		return errors.New("schema cannot be nil")
 	}
 
-	loadedSchema := gojsonschema.NewBytesLoader([]byte(*schema))
-	documentLoader := gojsonschema.NewBytesLoader([]byte(*conf))
+	compiled, err := compileSchema(schema)
+	if err != nil {
+		return err
+	}
+	return validateWithSchema(compiled, []byte(*conf))
+}
 
-	result, err := gojsonschema.Validate(loadedSchema, documentLoader)
+func compileSchema(schema *string) (*gojsonschema.Schema, error) {
+	if schema == nil {
+		return nil, errors.New("schema cannot be nil")
+	}
+	if strings.TrimSpace(*schema) == "" {
+		return nil, errors.New("schema cannot be empty")
+	}
+
+	compiled, err := gojsonschema.NewSchema(gojsonschema.NewBytesLoader([]byte(*schema)))
+	if err != nil {
+		return nil, fmt.Errorf("invalid schema: %w", err)
+	}
+	return compiled, nil
+}
+
+func validateWithSchema(schema *gojsonschema.Schema, document []byte) error {
+	if schema == nil {
+		return errors.New("compiled schema cannot be nil")
+	}
+	result, err := schema.Validate(gojsonschema.NewBytesLoader(document))
 	if err != nil {
 		return fmt.Errorf("validation error: %w", err)
 	}
