@@ -4,7 +4,7 @@
 
 Phases 3 through 7 resolve the original findings concerning temporary publication of mutations, optimistic-locking races, direct array replacement, duplicated reflection-based traversal, ineffective path caching, mutable Manager/Source snapshots, silent numeric truncation, unsupported-value coercion, repeated schema compilation, the externally unimplementable source abstraction, inconsistent custom validation, FileSource atomicity/durability, unsafe history payloads, the HTTP lifecycle/request/security boundary, nondeterministic query traversal, swallowed branch errors, locked predicates, and mixed Manager responsibilities.
 
-The remaining active work starts at Phase 8: integration, fuzz, failure-injection, benchmark, and CI hardening, followed by the planned repository/example reorganization in Phase 9.
+Phases 8 and 9 complete integration/failure coverage, fuzzing, benchmark baselines, CI, repository documentation, and executable examples. All findings below are retained as the historical baseline; there is no remaining planned implementation phase.
 
 ## Critical findings
 

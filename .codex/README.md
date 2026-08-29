@@ -12,4 +12,4 @@ This directory contains the internal review and implementation plan for improvin
 
 Set `RUN_FUZZ=1` for bounded fuzzing and `RUN_BENCHMARKS=1` for benchmark smoke tests. Their durations can be changed with `FUZZ_TIME` and `BENCH_TIME`.
 
-The current `examples/` directory remains excluded from behavioral decisions. Phase 9 is authorized to replace it with examples derived from the finalized API.
+The original invalid examples were excluded from behavioral decisions. Phase 9 replaced them with supported programs derived from the finalized API and included them in full repository checks.

@@ -4,9 +4,10 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-packages=(. ./history)
+packages=(./...)
 
-unformatted=$(gofmt -l -- *.go history/*.go)
+mapfile -t go_files < <(rg --files -g '*.go')
+unformatted=$(gofmt -l -- "${go_files[@]}")
 if [[ -n "$unformatted" ]]; then
   echo "The following Go files need gofmt:" >&2
   echo "$unformatted" >&2

@@ -20,7 +20,7 @@
 - [x] Phase 6 HTTP boundary redesign completed.
 - [x] Phase 7 query, structure, and cleanup completed.
 - [x] Phase 8 verification and hardening completed.
-- [x] Phase 9 repository-organization and executable-examples phase added to the roadmap.
+- [x] Phase 9 repository organization and executable examples completed.
 
 ## Phase 2 decisions
 
@@ -34,16 +34,16 @@ Full contracts are in `CONTRACTS.md`.
 
 ## Implementation order
 
-Phases 1 through 8 are complete. The next implementation work is Phase 9: reorganize the repository and rebuild `examples/` as supported, executable programs.
+Phases 1 through 9 are complete. No planned implementation phase remains.
 
 ## Phase 1 verification
 
-- Core test packages: `.` and `./history`
+- Full repository test target: `./...`
 - Deterministic tests after Phase 8: 89, plus 4 fuzz targets and 3 benchmarks
 - Statement coverage after Phase 8: 75.0% for the root package and 93.9% for `history`
 - `go test`, `go test -race`, and `go vet`: passing
 - Formatting check: passing
-- `go test ./...`: intentionally not an acceptance command because the excluded `examples/` directory contains mixed packages and a placeholder import
+- `go test ./...`: passing with every example package included
 - `staticcheck`: command is wired behind `RUN_STATICCHECK=1`; the currently installed binary is incompatible with the environment's Go standard library
 
 ## Phase 3 and 4 implementation summary
@@ -107,3 +107,11 @@ Phases 1 through 8 are complete. The next implementation work is Phase 9: reorga
 - Fuzz targets for JSON Pointer, query traversal, HTTP decoding, and mutation application
 - Benchmarks for cloning, compiled-schema validation, and path lookup, with recorded baselines
 - CI on minimum and stable Go versions with format, tests, race, vet, repetition, bounded fuzzing, and benchmark smoke runs
+
+## Phase 9 implementation summary
+
+- Root `goconfig` package retained as the stable public ownership boundary, avoiding import cycles and forwarding-only packages
+- User-facing integration and layout documentation grouped under `docs/`
+- Legacy mixed-package examples removed and replaced by six independent topic directories
+- Runnable examples for string/file sources, mutation validation, history, HTTP handlers, and external validation
+- Recursive formatting, tests, race detection, vet, repetition, and CI now include every example through `./...`

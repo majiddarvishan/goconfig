@@ -34,5 +34,5 @@ jobs:
           go-version: stable
           cache: true
       - run: go mod download
-      - run: go test -count=5 . ./history
+      - run: go test -count=5 ./...
       - run: RUN_FUZZ=1 FUZZ_TIME=3s RUN_BENCHMARKS=1 BENCH_TIME=1x bash .codex/check.sh

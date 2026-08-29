@@ -178,7 +178,7 @@ Implementation notes:
 
 ## Phase 9: Organize the project and rebuild examples
 
-Status: next.
+Status: completed.
 
 - Group implementation files into focused packages/directories where doing so improves ownership without introducing import cycles or unnecessary public API breaks.
 - Establish clear locations for core configuration, sources, validation, history, HTTP integration, internal helpers, tests, and documentation.
@@ -194,3 +194,11 @@ Acceptance criteria:
 - Every production file has a clear responsibility and package ownership.
 - `go test ./...` succeeds with all examples included.
 - Examples compile, run without placeholder imports, and demonstrate supported behavior rather than legacy internals.
+
+Implementation notes:
+
+- Retained the module root as the public `goconfig` package; focused filenames provide ownership without import cycles or forwarding-only subpackages.
+- Grouped user-facing integration and repository-layout documentation under `docs/`.
+- Replaced the mixed, placeholder-import example files with six independent `examples/<topic>` programs using only finalized public APIs.
+- Added runnable coverage for string and file sources, mutations with custom validation, bounded history, HTTP handler integration, and external validation.
+- Expanded `.codex/check.sh` and CI to format, test, race-test, and vet `./...`, making every example part of clean-checkout verification.

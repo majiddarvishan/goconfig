@@ -136,10 +136,11 @@ handler := server.Handler()
 
 The handler exposes `GET/POST /config` and optional `GET /health`. Standalone,
 supplied `http.Server`, route-registrar, authentication, CORS, timeout, body-size,
-and health configuration are documented in [HTTP_SERVER.md](HTTP_SERVER.md).
+and health configuration are documented in [docs/http.md](docs/http.md).
 
 ## Examples
 
-The existing `examples/` tree is legacy and is not currently a supported source
-of behavior. It will be replaced with buildable examples in the planned project
-organization phase.
+Buildable examples for string and file sources, mutation validation, history,
+HTTP handler integration, and external validation live in
+[examples/](examples/README.md). They use supported APIs and are compiled by
+`go test ./...`.

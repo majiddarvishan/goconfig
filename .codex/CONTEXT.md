@@ -2,7 +2,7 @@
 
 ## Scope
 
-Review and improve the core `goconfig` package. The current code under `examples/` is known to be incorrect and must not be used as a behavioral reference. Phase 9 is explicitly authorized to replace it with examples derived from the finalized public API.
+Review and improve the `goconfig` module. The originally supplied `examples/` were not used as behavioral references; Phase 9 replaced them with executable programs derived from the finalized public API.
 
 ## Current architecture
 
@@ -32,7 +32,7 @@ Review and improve the core `goconfig` package. The current code under `examples
 
 - The missing direct `orderedmap` and `cors` dependencies have been added to `go.mod`.
 - The supported module language baseline remains Go 1.18; Phase 1 was verified with Go 1.26.0.
-- The root and `history` packages have characterization tests and pass core compilation.
-- `examples/` is intentionally excluded from core checks because it contains mixed packages and a placeholder import.
+- The root and `history` packages have characterization tests and pass full verification.
+- Each `examples/<topic>` directory is an independent `main` package compiled by `go test ./...`.
 - The installed `staticcheck` binary is incompatible with the environment's Go standard library. `.codex/check.sh` runs it only when `RUN_STATICCHECK=1` and a compatible binary is available.
-- Phases 3 through 7 were completed with 86 tests, 73.9% root-package statement coverage, 93.9% history coverage, and passing repeated, race, and vet checks.
+- Phases 3 through 9 are complete with 89 deterministic tests, 4 fuzz targets, 3 benchmarks, buildable examples, and passing repeated, race, and vet checks.
