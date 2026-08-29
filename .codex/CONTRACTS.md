@@ -2,7 +2,7 @@
 
 This document records the decisions made in Phase 2. It defines the target behavior for the refactoring phases while preserving the supported v1 surface where practical.
 
-The transaction, path, snapshot, numeric, schema-compilation, observer, public Source, validation, persistence, and history portions of this contract are implemented as of Phase 5.
+The transaction, path, snapshot, numeric, schema-compilation, observer, public Source, validation, persistence, history, and HTTP portions of this contract are implemented as of Phase 6.
 
 ## Compatibility policy
 
@@ -78,6 +78,18 @@ User callbacks must not execute while a Manager lock is held. If the committed v
 - Stored and returned event indexes and JSON payloads are independent deep copies.
 - Non-positive query limits return an empty result.
 - Manager history capacity defaults to `DefaultHistoryCapacity` and can be set at construction with `WithHistoryCapacity`.
+
+## HTTP boundary
+
+- `HTTPServer.Handler` is the canonical reusable boundary for standalone, supplied-server, and route-registrar modes.
+- Standalone and supplied-server lifecycle operations return errors. Deprecated asynchronous Manager adapters do not panic or print.
+- A supplied server keeps its existing Handler as the fallback; goconfig owns only `/config` and the optionally enabled `/health` route.
+- Mutation requests are strict JSON objects. Unknown fields, multiple/trailing values, non-integer index/version syntax, and operation-inappropriate fields are rejected.
+- The empty JSON Pointer remains valid for root replacement over HTTP.
+- Configured body size, CORS, authentication, logger, timeout, and health policies are immutable after Handler construction.
+- API-key authentication retains only SHA-256 state and uses constant-time comparison.
+- Error responses distinguish malformed input, authentication, missing paths, version conflicts, body limits, media types, validation, and internal persistence failures.
+- Successful responses use a single Manager snapshot for configuration, schema, modifiable paths, and version.
 
 ## Ordering
 

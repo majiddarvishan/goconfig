@@ -1,6 +1,8 @@
 package goconfig_test
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -43,6 +45,26 @@ func TestExternalPackageCanUsePhaseFiveAPIs(t *testing.T) {
 	service := goconfig.NewValidationService("http://validator.test", time.Second)
 	service.SetHeader("X-Test", "value")
 	manager.SetValidationService(service)
+}
+
+func TestExternalPackageCanUseHTTPHandler(t *testing.T) {
+	source := &externalSource{
+		config: []byte(`{"name":"external"}`),
+		schema: []byte(`{"type":"object","properties":{"name":{"type":"string"}}}`),
+	}
+	manager, err := goconfig.NewManagerFromSource(source)
+	if err != nil {
+		t.Fatalf("NewManagerFromSource() error = %v", err)
+	}
+	server, err := goconfig.NewHTTPServer(manager, goconfig.WithHealthEnabled(false))
+	if err != nil {
+		t.Fatalf("NewHTTPServer() error = %v", err)
+	}
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/config", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
 }
 
 type externalSource struct {

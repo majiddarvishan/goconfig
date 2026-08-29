@@ -2,7 +2,7 @@
 
 ## Scope
 
-Review and improve the core `goconfig` package. The code under `examples/` is known to be incorrect and must not be used as a behavioral reference.
+Review and improve the core `goconfig` package. The current code under `examples/` is known to be incorrect and must not be used as a behavioral reference. Phase 9 is explicitly authorized to replace it with examples derived from the finalized public API.
 
 ## Current architecture
 
@@ -16,7 +16,8 @@ Review and improve the core `goconfig` package. The code under `examples/` is kn
 8. Custom validation receives complete path values before/after each mutation; external validation receives the complete candidate configuration and caller context.
 9. `FileSource` commits through a unique same-directory temporary file and atomic rename, preserving mode and syncing file/directory state.
 10. History is an independently synchronized bounded circular log whose inputs and outputs are deep-copied.
-11. Query, history, validation, and HTTP are consumers of coherent Manager snapshots.
+11. HTTP exposes one reusable handler across standalone, supplied-server, and route-registrar ownership modes with strict input and coherent responses.
+12. Query, history, validation, and HTTP are consumers of coherent Manager snapshots.
 
 ## Working constraints
 
@@ -33,4 +34,4 @@ Review and improve the core `goconfig` package. The code under `examples/` is kn
 - The root and `history` packages have characterization tests and pass core compilation.
 - `examples/` is intentionally excluded from core checks because it contains mixed packages and a placeholder import.
 - The installed `staticcheck` binary is incompatible with the environment's Go standard library. `.codex/check.sh` runs it only when `RUN_STATICCHECK=1` and a compatible binary is available.
-- Phases 3 through 5 were completed with 61 tests, 66.6% root-package statement coverage, 93.9% history coverage, and passing repeated, race, and vet checks.
+- Phases 3 through 6 were completed with 71 tests, 70.5% root-package statement coverage, 93.9% history coverage, and passing repeated, race, and vet checks.

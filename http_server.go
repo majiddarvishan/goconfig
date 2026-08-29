@@ -1,6 +1,7 @@
 package goconfig
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -11,7 +12,10 @@ import (
 	"io"
 	"log"
 	"math"
+	"mime"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/iancoleman/orderedmap"
@@ -19,358 +23,571 @@ import (
 )
 
 const (
-	maxBodySize     = 10 * 1024 * 1024 // 10MB
-	defaultAddress  = "localhost"
-	defaultPort     = 8080
-	shutdownTimeout = 30 * time.Second
-	readTimeout     = 15 * time.Second
-	writeTimeout    = 15 * time.Second
-	idleTimeout     = 60 * time.Second
+	defaultMaxBodySize = int64(10 * 1024 * 1024)
+	defaultAddress     = "localhost"
+	defaultPort        = 8080
+	shutdownTimeout    = 30 * time.Second
+	readTimeout        = 15 * time.Second
+	writeTimeout       = 15 * time.Second
+	idleTimeout        = 60 * time.Second
 )
 
-type HttpServer struct {
-	address    string
-	port       int
-	apiKey     string
+var (
+	ErrHTTPServerNotConfigured = errors.New("HTTP server is not configured")
+	ErrHTTPServerStarted       = errors.New("HTTP server is already running")
+	errHTTPRequestTooLarge     = errors.New("HTTP request body is too large")
+)
+
+// HTTPLogger is the minimal logging contract used by HTTPServer.
+type HTTPLogger interface {
+	Printf(format string, values ...interface{})
+}
+
+// Authenticator decides whether an HTTP request may access configuration.
+type Authenticator func(*http.Request) bool
+
+// HealthCheck reports whether the service should be considered healthy.
+type HealthCheck func(context.Context) error
+
+// CORSConfig controls cross-origin behavior for the reusable handler.
+type CORSConfig struct {
+	AllowedOrigins []string
+	AllowedMethods []string
+	AllowedHeaders []string
+	MaxAge         int
+}
+
+// HTTPTimeouts controls standalone server timeouts.
+type HTTPTimeouts struct {
+	Read  time.Duration
+	Write time.Duration
+	Idle  time.Duration
+}
+
+// HTTPServer exposes goconfig through a reusable handler, an external route
+// registrar, a supplied http.Server, or a package-owned standalone server.
+type HTTPServer struct {
+	mu sync.Mutex
+
+	address string
+	port    int
+	manager *Manager
+
 	apiKeyHash [32]byte
-	manager    *Manager
+	apiKeySet  bool
+	auth       Authenticator
 
-	server    *http.Server
-	registrar RouteRegistrar
+	server             *http.Server
+	serverOptionSet    bool
+	registrar          RouteRegistrar
+	registrarOptionSet bool
+	logger             HTTPLogger
+	cors               CORSConfig
+	timeouts           HTTPTimeouts
+	maxBodySize        int64
+	healthEnabled      bool
+	healthCheck        HealthCheck
+
+	handlerOnce sync.Once
+	handler     http.Handler
+	handlerSet  bool
+	running     bool
 }
 
-// ─────────────────────────────────────────────────────────────
-// OPTIONS
-// ─────────────────────────────────────────────────────────────
+// HttpServer retains the original public spelling.
+// Deprecated: use HTTPServer.
+type HttpServer = HTTPServer
 
-type HttpServerOption func(*HttpServer)
+// HttpServerOption configures HTTPServer. The original spelling is retained
+// for v1 source compatibility.
+type HttpServerOption func(*HTTPServer)
 
-func WithAddress(address string) HttpServerOption {
-	return func(hs *HttpServer) { hs.address = address }
+// HTTPServerOption is the idiomatic spelling of HttpServerOption.
+type HTTPServerOption = HttpServerOption
+
+// WithAddress sets the standalone listen address.
+func WithAddress(address string) HTTPServerOption {
+	return func(server *HTTPServer) { server.address = address }
 }
 
-func WithPort(port int) HttpServerOption {
-	return func(hs *HttpServer) {
-		if port > 0 && port <= 65535 {
-			hs.port = port
-		}
+// WithPort sets the standalone listen port.
+func WithPort(port int) HTTPServerOption {
+	return func(server *HTTPServer) { server.port = port }
+}
+
+// WithAPIKey enables X-API-Key authentication without retaining the raw key.
+func WithAPIKey(apiKey string) HTTPServerOption {
+	return func(server *HTTPServer) {
+		server.auth = nil
+		server.apiKeyHash = sha256.Sum256([]byte(apiKey))
+		server.apiKeySet = apiKey != ""
 	}
 }
 
-func WithAPIKey(apiKey string) HttpServerOption {
-	return func(hs *HttpServer) {
-		if apiKey != "" {
-			hs.apiKey = apiKey
-			hs.apiKeyHash = sha256.Sum256([]byte(apiKey))
-		}
+// WithAuthenticator configures request authentication. A nil authenticator
+// disables authentication.
+func WithAuthenticator(authenticator Authenticator) HTTPServerOption {
+	return func(server *HTTPServer) {
+		server.auth = authenticator
+		server.apiKeyHash = [32]byte{}
+		server.apiKeySet = false
 	}
 }
 
-// Use when embedding goconfig into another web service
-func WithRouteRegistrar(r RouteRegistrar) HttpServerOption {
-	return func(hs *HttpServer) {
-		hs.registrar = r
+// WithRouteRegistrar embeds routes into a router or framework adapter.
+func WithRouteRegistrar(registrar RouteRegistrar) HTTPServerOption {
+	return func(server *HTTPServer) {
+		server.registrar = registrar
+		server.registrarOptionSet = true
 	}
 }
 
-// Use when goconfig owns the server
-func WithServer(server *http.Server) HttpServerOption {
-	return func(hs *HttpServer) {
-		hs.server = server
+// WithServer makes a supplied http.Server own the listener. Existing routes on
+// its Handler remain available and goconfig routes are mounted ahead of them.
+func WithServer(httpServer *http.Server) HTTPServerOption {
+	return func(server *HTTPServer) {
+		server.server = httpServer
+		server.serverOptionSet = true
 	}
 }
 
-// ─────────────────────────────────────────────────────────────
-// CONSTRUCTORS
-// ─────────────────────────────────────────────────────────────
+// WithCORS replaces the default CORS policy.
+func WithCORS(config CORSConfig) HTTPServerOption {
+	return func(server *HTTPServer) { server.cors = cloneCORSConfig(config) }
+}
 
-func newHttpServer(m *Manager, opts ...HttpServerOption) (*HttpServer, error) {
-	if m == nil {
+// WithLogger sets lifecycle logging. Passing nil disables lifecycle logs.
+func WithLogger(logger HTTPLogger) HTTPServerOption {
+	return func(server *HTTPServer) { server.logger = logger }
+}
+
+// WithHTTPTimeouts sets defaults applied when server timeouts are zero.
+func WithHTTPTimeouts(timeouts HTTPTimeouts) HTTPServerOption {
+	return func(server *HTTPServer) { server.timeouts = timeouts }
+}
+
+// WithMaxBodySize sets the maximum POST request size in bytes.
+func WithMaxBodySize(size int64) HTTPServerOption {
+	return func(server *HTTPServer) { server.maxBodySize = size }
+}
+
+// WithHealthCheck enables /health and installs its policy.
+func WithHealthCheck(check HealthCheck) HTTPServerOption {
+	return func(server *HTTPServer) {
+		server.healthEnabled = true
+		server.healthCheck = check
+	}
+}
+
+// WithHealthEnabled controls whether /health is registered.
+func WithHealthEnabled(enabled bool) HTTPServerOption {
+	return func(server *HTTPServer) { server.healthEnabled = enabled }
+}
+
+// NewHTTPServer constructs an HTTP boundary for manager.
+func NewHTTPServer(manager *Manager, options ...HTTPServerOption) (*HTTPServer, error) {
+	return newHttpServer(manager, options...)
+}
+
+func newHttpServer(manager *Manager, options ...HttpServerOption) (*HTTPServer, error) {
+	if manager == nil {
 		return nil, fmt.Errorf("manager cannot be nil")
 	}
-
-	hs := &HttpServer{
-		manager: m,
-		address: defaultAddress,
-		port:    defaultPort,
+	server := &HTTPServer{
+		manager:       manager,
+		address:       defaultAddress,
+		port:          defaultPort,
+		logger:        log.Default(),
+		cors:          defaultCORSConfig(),
+		timeouts:      HTTPTimeouts{Read: readTimeout, Write: writeTimeout, Idle: idleTimeout},
+		maxBodySize:   defaultMaxBodySize,
+		healthEnabled: true,
 	}
-
-	for _, opt := range opts {
-		opt(hs)
+	for index, option := range options {
+		if option == nil {
+			return nil, fmt.Errorf("HTTP server option %d is nil", index)
+		}
+		option(server)
 	}
-
-	return hs, nil
-}
-
-func newHttpServerFromNode(m *Manager, conf *Node) (*HttpServer, error) {
-	hs, err := newHttpServer(m)
-	if err != nil {
+	if err := server.validateOptions(); err != nil {
 		return nil, err
 	}
-
-	if conf == nil {
-		return hs, nil
-	}
-
-	if n, err := conf.At("address"); err == nil {
-		if s, _ := n.GetString(); s != "" {
-			hs.address = s
-		}
-	}
-
-	if n, err := conf.At("port"); err == nil {
-		if p, _ := n.GetInt(); p > 0 {
-			hs.port = p
-		}
-	}
-
-	if n, err := conf.At("api_key"); err == nil {
-		if k, _ := n.GetString(); k != "" {
-			hs.apiKey = k
-			hs.apiKeyHash = sha256.Sum256([]byte(k))
-		}
-	}
-
-	return hs, nil
+	return server, nil
 }
 
-// ─────────────────────────────────────────────────────────────
-// ROUTES
-// ─────────────────────────────────────────────────────────────
-
-func (hs *HttpServer) registerRoutes(r RouteRegistrar) {
-	r.HandleFunc("/config", hs.handleConfig, "GET", "POST", "OPTIONS")
-	r.HandleFunc("/health", hs.handleHealth, "GET")
+func newHttpServerFromNode(manager *Manager, config *Node) (*HTTPServer, error) {
+	options := make([]HTTPServerOption, 0, 3)
+	if config != nil {
+		if node, err := config.At("address"); err == nil {
+			if address, valueErr := node.GetString(); valueErr == nil {
+				options = append(options, WithAddress(address))
+			}
+		}
+		if node, err := config.At("port"); err == nil {
+			if port, valueErr := node.GetInt(); valueErr == nil {
+				options = append(options, WithPort(port))
+			}
+		}
+		if node, err := config.At("api_key"); err == nil {
+			if key, valueErr := node.GetString(); valueErr == nil {
+				options = append(options, WithAPIKey(key))
+			}
+		}
+	}
+	return newHttpServer(manager, options...)
 }
 
-// ─────────────────────────────────────────────────────────────
-// START / STOP
-// ─────────────────────────────────────────────────────────────
-
-func (hs *HttpServer) Start() error {
-	// CASE 1: embedded into external web service
-	if hs.registrar != nil {
-		hs.registerRoutes(hs.registrar)
-		log.Println("goconfig routes registered on external server")
-		return nil
+func (server *HTTPServer) validateOptions() error {
+	if strings.TrimSpace(server.address) == "" {
+		return fmt.Errorf("HTTP address cannot be empty")
 	}
-
-	// CASE 2: goconfig owns HTTP server
-	mux := http.NewServeMux()
-	hs.registerRoutes(muxAdapter{mux})
-
-	handler := cors.New(cors.Options{
-		AllowedOrigins: []string{"*"},
-		AllowedMethods: []string{"GET", "POST", "OPTIONS"},
-		AllowedHeaders: []string{"Content-Type", "Authorization", "X-API-Key"},
-		MaxAge:         3600,
-	}).Handler(mux)
-
-	if hs.server == nil {
-		addr := fmt.Sprintf("%s:%d", hs.address, hs.port)
-		hs.server = &http.Server{
-			Addr:         addr,
-			Handler:      handler,
-			ReadTimeout:  readTimeout,
-			WriteTimeout: writeTimeout,
-			IdleTimeout:  idleTimeout,
-		}
-		log.Printf("Starting goconfig HTTP server on %s", addr)
+	if server.port <= 0 || server.port > 65535 {
+		return fmt.Errorf("HTTP port must be between 1 and 65535")
 	}
-
-	if err := hs.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return err
+	if server.maxBodySize <= 0 || server.maxBodySize == math.MaxInt64 {
+		return fmt.Errorf("HTTP maximum body size must be between 1 and %d", int64(math.MaxInt64-1))
+	}
+	if server.timeouts.Read < 0 || server.timeouts.Write < 0 || server.timeouts.Idle < 0 {
+		return fmt.Errorf("HTTP timeouts cannot be negative")
+	}
+	if server.serverOptionSet && server.server == nil {
+		return fmt.Errorf("supplied HTTP server cannot be nil")
+	}
+	if server.registrarOptionSet && server.registrar == nil {
+		return fmt.Errorf("route registrar cannot be nil")
+	}
+	if server.serverOptionSet && server.registrarOptionSet {
+		return fmt.Errorf("HTTP server and route registrar modes are mutually exclusive")
 	}
 	return nil
 }
 
-func (hs *HttpServer) Shutdown(ctx context.Context) error {
-	if hs.server == nil {
+// Handler returns a reusable, concurrency-safe HTTP handler.
+func (server *HTTPServer) Handler() http.Handler {
+	server.handlerOnce.Do(func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/config", server.handleConfig)
+		if server.healthEnabled {
+			mux.HandleFunc("/health", server.handleHealth)
+		}
+		config := server.cors
+		server.handler = cors.New(cors.Options{
+			AllowedOrigins: append([]string(nil), config.AllowedOrigins...),
+			AllowedMethods: append([]string(nil), config.AllowedMethods...),
+			AllowedHeaders: append([]string(nil), config.AllowedHeaders...),
+			MaxAge:         config.MaxAge,
+		}).Handler(mux)
+	})
+	return server.handler
+}
+
+// RegisterRoutes attaches the reusable handler to an external route registrar.
+func (server *HTTPServer) RegisterRoutes(registrar RouteRegistrar) error {
+	if registrar == nil {
+		return fmt.Errorf("route registrar cannot be nil")
+	}
+	handler := server.Handler()
+	registrar.HandleFunc("/config", handler.ServeHTTP, http.MethodGet, http.MethodPost, http.MethodOptions)
+	if server.healthEnabled {
+		registrar.HandleFunc("/health", handler.ServeHTTP, http.MethodGet, http.MethodOptions)
+	}
+	return nil
+}
+
+func (server *HTTPServer) registerRoutes(registrar RouteRegistrar) {
+	_ = server.RegisterRoutes(registrar)
+}
+
+// Start serves according to the configured ownership mode. It blocks while a
+// standalone or supplied http.Server is serving and returns listener errors.
+func (server *HTTPServer) Start() error {
+	if server.registrar != nil {
+		return server.RegisterRoutes(server.registrar)
+	}
+
+	server.mu.Lock()
+	if server.running {
+		server.mu.Unlock()
+		return ErrHTTPServerStarted
+	}
+	httpServer := server.prepareHTTPServerLocked()
+	server.running = true
+	server.mu.Unlock()
+
+	server.logf("starting goconfig HTTP server on %s", httpServer.Addr)
+	err := httpServer.ListenAndServe()
+
+	server.mu.Lock()
+	server.running = false
+	server.mu.Unlock()
+	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
-	log.Println("Shutting down goconfig HTTP server")
-	return hs.server.Shutdown(ctx)
+	return err
 }
 
-// ─────────────────────────────────────────────────────────────
-// HANDLERS
-// ─────────────────────────────────────────────────────────────
+func (server *HTTPServer) prepareHTTPServerLocked() *http.Server {
+	if server.server == nil {
+		server.server = &http.Server{Addr: fmt.Sprintf("%s:%d", server.address, server.port)}
+	}
+	if server.server.Addr == "" {
+		server.server.Addr = fmt.Sprintf("%s:%d", server.address, server.port)
+	}
+	if server.server.Handler == nil {
+		server.server.Handler = server.Handler()
+		server.handlerSet = true
+	} else if !server.handlerSet {
+		existing := server.server.Handler
+		mux := http.NewServeMux()
+		mux.Handle("/config", server.Handler())
+		if server.healthEnabled {
+			mux.Handle("/health", server.Handler())
+		}
+		mux.Handle("/", existing)
+		server.server.Handler = mux
+		server.handlerSet = true
+	}
+	if server.server.ReadTimeout == 0 {
+		server.server.ReadTimeout = server.timeouts.Read
+	}
+	if server.server.WriteTimeout == 0 {
+		server.server.WriteTimeout = server.timeouts.Write
+	}
+	if server.server.IdleTimeout == 0 {
+		server.server.IdleTimeout = server.timeouts.Idle
+	}
+	return server.server
+}
 
-func (hs *HttpServer) handleConfig(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
+// Shutdown gracefully stops a standalone or supplied server.
+func (server *HTTPServer) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("shutdown context cannot be nil")
+	}
+	server.mu.Lock()
+	httpServer := server.server
+	server.mu.Unlock()
+	if httpServer == nil {
+		return nil
+	}
+	server.logf("shutting down goconfig HTTP server")
+	return httpServer.Shutdown(ctx)
+}
+
+func (server *HTTPServer) handleConfig(writer http.ResponseWriter, request *http.Request) {
+	switch request.Method {
 	case http.MethodGet:
-		hs.onGet(w, r)
+		server.onGet(writer, request)
 	case http.MethodPost:
-		hs.onPost(w, r)
+		server.onPost(writer, request)
 	case http.MethodOptions:
-		hs.onOptions(w)
+		writer.WriteHeader(http.StatusNoContent)
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writer.Header().Set("Allow", "GET, POST, OPTIONS")
+		writeError(writer, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
-func (hs *HttpServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"ok"}`))
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// GET
-////////////////////////////////////////////////////////////////////////////////
-
-func (hs *HttpServer) onGet(w http.ResponseWriter, r *http.Request) {
-	if !hs.checkAccess(r) {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
+func (server *HTTPServer) handleHealth(writer http.ResponseWriter, request *http.Request) {
+	if request.Method == http.MethodOptions {
+		writer.WriteHeader(http.StatusNoContent)
 		return
 	}
-
-	data, err := hs.buildConfigState()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to build config: %s", err))
+	if request.Method != http.MethodGet {
+		writer.Header().Set("Allow", "GET, OPTIONS")
+		writeError(writer, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-
-	writeSuccess(w, data)
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// POST
-////////////////////////////////////////////////////////////////////////////////
-
-func (hs *HttpServer) onPost(w http.ResponseWriter, r *http.Request) {
-	if !hs.checkAccess(r) {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-
-	// Limit request body size
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
-	defer r.Body.Close()
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("could not read body: %s", err))
-		return
-	}
-
-	if len(body) == 0 {
-		writeError(w, http.StatusBadRequest, "request body is empty")
-		return
-	}
-
-	bodyJSON := orderedmap.New()
-	if err := json.Unmarshal(body, &bodyJSON); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %s", err))
-		return
-	}
-
-	op, err := getString(bodyJSON, "op")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	path, err := getString(bodyJSON, "path")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	// Validate path format
-	if path == "" || path[0] != '/' {
-		writeError(w, http.StatusBadRequest, "path must start with '/'")
-		return
-	}
-
-	value, hasValue := bodyJSON.Get("value")
-
-	// Version-based optimistic locking (better than hash)
-	var expectedVersion *int64
-	if versionVal, ok := bodyJSON.Get("version"); ok {
-		versionFloat, ok := versionVal.(float64)
-		if !ok || math.Trunc(versionFloat) != versionFloat || versionFloat < 0 || versionFloat >= math.MaxInt64 {
-			writeError(w, http.StatusBadRequest, "version must be a number")
+	if server.healthCheck != nil {
+		if err := server.healthCheck(request.Context()); err != nil {
+			writeJSON(writer, http.StatusServiceUnavailable, map[string]interface{}{"status": "unavailable"})
 			return
 		}
-		version := int64(versionFloat)
-		expectedVersion = &version
 	}
+	writeJSON(writer, http.StatusOK, map[string]interface{}{"status": "ok"})
+}
 
-	// Execute operation
-	switch op {
-	case "insert":
-		if !hasValue {
-			writeError(w, http.StatusBadRequest, "value is required for insert")
+func (server *HTTPServer) onGet(writer http.ResponseWriter, request *http.Request) {
+	if !server.checkAccess(request) {
+		writeError(writer, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	data, err := server.buildConfigState()
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "failed to build configuration response")
+		return
+	}
+	writeSuccess(writer, data)
+}
+
+type httpMutationRequest struct {
+	Operation string          `json:"op"`
+	Path      *string         `json:"path"`
+	Index     json.RawMessage `json:"index"`
+	Value     json.RawMessage `json:"value"`
+	Version   json.RawMessage `json:"version"`
+}
+
+func (server *HTTPServer) onPost(writer http.ResponseWriter, request *http.Request) {
+	if !server.checkAccess(request) {
+		writeError(writer, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if contentType := request.Header.Get("Content-Type"); contentType != "" {
+		mediaType, _, err := mime.ParseMediaType(contentType)
+		if err != nil || mediaType != "application/json" {
+			writeError(writer, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
 			return
 		}
+	}
 
-		index, err := getIndex(bodyJSON)
+	payload, err := server.decodeMutationRequest(request)
+	if err != nil {
+		if errors.Is(err, errHTTPRequestTooLarge) {
+			writeError(writer, http.StatusRequestEntityTooLarge, "request body is too large")
+		} else {
+			writeError(writer, http.StatusBadRequest, err.Error())
+		}
+		return
+	}
+
+	mutation, err := payload.mutationRequest()
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := server.manager.mutate(request.Context(), mutation); err != nil {
+		server.writeMutationError(writer, err)
+		return
+	}
+
+	data, err := server.buildConfigState()
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "failed to build configuration response")
+		return
+	}
+	writeSuccess(writer, data)
+}
+
+func (server *HTTPServer) decodeMutationRequest(request *http.Request) (httpMutationRequest, error) {
+	defer request.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(request.Body, server.maxBodySize+1))
+	if err != nil {
+		return httpMutationRequest{}, fmt.Errorf("failed to read request body: %w", err)
+	}
+	if int64(len(body)) > server.maxBodySize {
+		return httpMutationRequest{}, errHTTPRequestTooLarge
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	var payload httpMutationRequest
+	if err := decoder.Decode(&payload); err != nil {
+		if errors.Is(err, io.EOF) {
+			return payload, fmt.Errorf("request body is empty")
+		}
+		return payload, fmt.Errorf("invalid JSON request: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return payload, fmt.Errorf("request body must contain one JSON object")
+		}
+		return payload, fmt.Errorf("invalid trailing JSON: %w", err)
+	}
+	return payload, nil
+}
+
+func (payload httpMutationRequest) mutationRequest() (mutationRequest, error) {
+	if payload.Operation == "" {
+		return mutationRequest{}, fmt.Errorf("'op' is required")
+	}
+	if payload.Path == nil {
+		return mutationRequest{}, fmt.Errorf("'path' is required")
+	}
+	if _, err := parseJSONPointer(*payload.Path); err != nil {
+		return mutationRequest{}, fmt.Errorf("invalid path: %w", err)
+	}
+	expectedVersion, err := parseOptionalInt64(payload.Version, "version", math.MaxInt64)
+	if err != nil {
+		return mutationRequest{}, err
+	}
+
+	request := mutationRequest{path: *payload.Path, expectedVersion: expectedVersion}
+	switch payload.Operation {
+	case string(mutationInsert):
+		request.kind = mutationInsert
+		request.index, err = parseRequiredIndex(payload.Index)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
+			return mutationRequest{}, err
 		}
-
-		if err := hs.manager.mutate(r.Context(), mutationRequest{kind: mutationInsert, path: path, index: index, value: value, expectedVersion: expectedVersion}); err != nil {
-			hs.writeMutationError(w, err)
-			return
+		request.value, err = decodeRequiredValue(payload.Value, "insert")
+	case string(mutationRemove):
+		request.kind = mutationRemove
+		request.index, err = parseRequiredIndex(payload.Index)
+		if err == nil && len(payload.Value) != 0 {
+			err = fmt.Errorf("'value' is not allowed for remove")
 		}
-
-	case "remove":
-		index, err := getIndex(bodyJSON)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
+	case string(mutationReplace):
+		request.kind = mutationReplace
+		if len(payload.Index) != 0 {
+			return mutationRequest{}, fmt.Errorf("'index' is not allowed for replace")
 		}
-
-		if err := hs.manager.mutate(r.Context(), mutationRequest{kind: mutationRemove, path: path, index: index, expectedVersion: expectedVersion}); err != nil {
-			hs.writeMutationError(w, err)
-			return
-		}
-
-	case "replace":
-		if !hasValue {
-			writeError(w, http.StatusBadRequest, "value is required for replace")
-			return
-		}
-
-		if err := hs.manager.mutate(r.Context(), mutationRequest{kind: mutationReplace, path: path, value: value, expectedVersion: expectedVersion}); err != nil {
-			hs.writeMutationError(w, err)
-			return
-		}
-
+		request.value, err = decodeRequiredValue(payload.Value, "replace")
 	default:
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported operation: %s", op))
-		return
+		return mutationRequest{}, fmt.Errorf("unsupported operation: %s", payload.Operation)
 	}
-
-	// Build updated config for response
-	data, err := hs.buildConfigState()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to build config: %s", err))
-		return
+		return mutationRequest{}, err
 	}
-
-	writeSuccess(w, data)
+	return request, nil
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// OPTIONS
-////////////////////////////////////////////////////////////////////////////////
-
-func (hs *HttpServer) onOptions(w http.ResponseWriter) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, X-API-Key")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-	w.WriteHeader(http.StatusOK)
+func parseRequiredIndex(raw json.RawMessage) (int, error) {
+	value, err := parseOptionalInt64(raw, "index", int64(maxInt()))
+	if err != nil {
+		return 0, err
+	}
+	if value == nil {
+		return 0, fmt.Errorf("'index' is required")
+	}
+	return int(*value), nil
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// BUILD CONFIG STATE
-////////////////////////////////////////////////////////////////////////////////
+func parseOptionalInt64(raw json.RawMessage, name string, maximum int64) (*int64, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	var value interface{}
+	if err := decoder.Decode(&value); err != nil {
+		return nil, fmt.Errorf("'%s' must be a non-negative integer", name)
+	}
+	number, ok := value.(json.Number)
+	if !ok || strings.ContainsAny(number.String(), ".eE") {
+		return nil, fmt.Errorf("'%s' must be a non-negative integer", name)
+	}
+	parsed, err := number.Int64()
+	if err != nil || parsed < 0 || parsed > maximum {
+		return nil, fmt.Errorf("'%s' must be a non-negative integer", name)
+	}
+	return &parsed, nil
+}
 
-func (hs *HttpServer) buildConfigState() (*orderedmap.OrderedMap, error) {
-	snapshot, err := hs.manager.snapshot()
+func decodeRequiredValue(raw json.RawMessage, operation string) (interface{}, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("'value' is required for %s", operation)
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	var value interface{}
+	if err := decoder.Decode(&value); err != nil {
+		return nil, fmt.Errorf("invalid mutation value: %w", err)
+	}
+	return value, nil
+}
+
+func (server *HTTPServer) buildConfigState() (*orderedmap.OrderedMap, error) {
+	snapshot, err := server.manager.snapshot()
 	if err != nil {
 		return nil, err
 	}
@@ -380,114 +597,98 @@ func (hs *HttpServer) buildConfigState() (*orderedmap.OrderedMap, error) {
 			return nil, fmt.Errorf("failed to unmarshal schema: %w", err)
 		}
 	}
-
 	paths := orderedmap.New()
 	paths.Set("insertable", snapshot.insertable)
 	paths.Set("removable", snapshot.removable)
 	paths.Set("replaceable", snapshot.replaceable)
-
 	out := orderedmap.New()
 	out.Set("modifiable_paths", paths)
 	out.Set("config", snapshot.config)
 	out.Set("schema", schemaJSON)
 	out.Set("version", snapshot.version)
-
 	return out, nil
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// HELPERS
-////////////////////////////////////////////////////////////////////////////////
-
-func HashSHA256(s string) string {
-	sum := sha256.Sum256([]byte(s))
+func HashSHA256(value string) string {
+	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
 }
 
-func writeError(w http.ResponseWriter, code int, msg string) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-
-	errObj := orderedmap.New()
-	errObj.Set("message", msg)
-	errObj.Set("code", code)
-
-	resp := orderedmap.New()
-	resp.Set("success", false)
-	resp.Set("error", errObj)
-
-	out, _ := json.MarshalIndent(resp, "", "  ")
-	w.Write(out)
+func writeError(writer http.ResponseWriter, status int, message string) {
+	writeJSON(writer, status, map[string]interface{}{
+		"success": false,
+		"error": map[string]interface{}{
+			"message": message,
+			"code":    status,
+		},
+	})
 }
 
-func writeSuccess(w http.ResponseWriter, data *orderedmap.OrderedMap) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	resp := orderedmap.New()
-	resp.Set("success", true)
-	resp.Set("data", data)
-
-	out, _ := json.MarshalIndent(resp, "", "  ")
-	w.Write(out)
+func writeSuccess(writer http.ResponseWriter, data *orderedmap.OrderedMap) {
+	writeJSON(writer, http.StatusOK, map[string]interface{}{"success": true, "data": data})
 }
 
-func getString(m *orderedmap.OrderedMap, key string) (string, error) {
-	v, ok := m.Get(key)
-	if !ok {
-		return "", fmt.Errorf("'%s' is missing", key)
+func writeJSON(writer http.ResponseWriter, status int, value interface{}) {
+	writer.Header().Set("Content-Type", "application/json")
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		http.Error(writer, `{"success":false,"error":{"message":"failed to encode response","code":500}}`, http.StatusInternalServerError)
+		return
 	}
-	s, ok := v.(string)
-	if !ok {
-		return "", fmt.Errorf("'%s' must be a string", key)
-	}
-	if s == "" {
-		return "", fmt.Errorf("'%s' cannot be empty", key)
-	}
-	return s, nil
+	writer.WriteHeader(status)
+	_, _ = writer.Write(data)
 }
 
-func getIndex(m *orderedmap.OrderedMap) (int, error) {
-	val, ok := m.Get("index")
-	if !ok {
-		return 0, fmt.Errorf("'index' is missing")
-	}
-	f, ok := val.(float64)
-	if !ok {
-		return 0, fmt.Errorf("'index' must be a number")
-	}
-	if f < 0 || math.Trunc(f) != f || f > float64(maxInt()) {
-		return 0, fmt.Errorf("'index' must be a non-negative integer")
-	}
-	return int(f), nil
-}
-
-func (hs *HttpServer) writeMutationError(w http.ResponseWriter, err error) {
+func (server *HTTPServer) writeMutationError(writer http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrVersionConflict):
-		writeError(w, http.StatusConflict, err.Error())
+		writeError(writer, http.StatusConflict, err.Error())
 	case errors.Is(err, ErrValidation):
-		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		writeError(writer, http.StatusUnprocessableEntity, err.Error())
+	case errors.Is(err, ErrPathNotFound):
+		writeError(writer, http.StatusNotFound, err.Error())
+	case errors.Is(err, ErrInvalidPath), errors.Is(err, ErrTypeMismatch), errors.Is(err, ErrIndexOutOfRange):
+		writeError(writer, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrPersistence):
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(writer, http.StatusInternalServerError, "configuration persistence failed")
 	default:
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(writer, http.StatusInternalServerError, "configuration mutation failed")
 	}
 }
 
-func (hs *HttpServer) checkAccess(r *http.Request) bool {
-	if hs.apiKey == "" {
-		return true // No auth required if no key set
+func (server *HTTPServer) checkAccess(request *http.Request) bool {
+	if server.auth != nil {
+		return server.auth(request)
 	}
-
-	providedKey := r.Header.Get("X-API-Key")
+	if !server.apiKeySet {
+		return true
+	}
+	providedKey := request.Header.Get("X-API-Key")
 	if providedKey == "" {
 		return false
 	}
-
-	// Constant-time comparison to prevent timing attacks
 	providedHash := sha256.Sum256([]byte(providedKey))
-	return subtle.ConstantTimeCompare(hs.apiKeyHash[:], providedHash[:]) == 1
+	return subtle.ConstantTimeCompare(server.apiKeyHash[:], providedHash[:]) == 1
+}
+
+func (server *HTTPServer) logf(format string, values ...interface{}) {
+	if server.logger != nil {
+		server.logger.Printf(format, values...)
+	}
+}
+
+func defaultCORSConfig() CORSConfig {
+	return CORSConfig{
+		AllowedOrigins: []string{"*"},
+		AllowedMethods: []string{http.MethodGet, http.MethodPost, http.MethodOptions},
+		AllowedHeaders: []string{"Content-Type", "Authorization", "X-API-Key"},
+		MaxAge:         3600,
+	}
+}
+
+func cloneCORSConfig(config CORSConfig) CORSConfig {
+	config.AllowedOrigins = append([]string(nil), config.AllowedOrigins...)
+	config.AllowedMethods = append([]string(nil), config.AllowedMethods...)
+	config.AllowedHeaders = append([]string(nil), config.AllowedHeaders...)
+	return config
 }

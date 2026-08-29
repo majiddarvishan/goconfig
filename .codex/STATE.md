@@ -17,6 +17,8 @@
 - [x] Phase 3 transactional mutation engine completed.
 - [x] Phase 4 Node and Source encapsulation completed.
 - [x] Phase 5 validation, persistence, and history hardening completed.
+- [x] Phase 6 HTTP boundary redesign completed.
+- [x] Phase 9 repository-organization and executable-examples phase added to the roadmap.
 
 ## Phase 2 decisions
 
@@ -30,13 +32,13 @@ Full contracts are in `CONTRACTS.md`.
 
 ## Implementation order
 
-Phases 1 through 5 are complete. The next implementation work is Phase 6: HTTP boundary redesign.
+Phases 1 through 6 are complete. The next implementation work is Phase 7: query, structure, and cleanup. Phase 9 will later reorganize the repository and rebuild `examples/` as supported, executable programs.
 
 ## Phase 1 verification
 
 - Core test packages: `.` and `./history`
-- Characterization and contract tests: 61
-- Statement coverage after Phase 5: 66.6% for the root package and 93.9% for `history`
+- Characterization and contract tests: 71
+- Statement coverage after Phase 6: 70.5% for the root package and 93.9% for `history`
 - `go test`, `go test -race`, and `go vet`: passing
 - Formatting check: passing
 - `go test ./...`: intentionally not an acceptance command because the excluded `examples/` directory contains mixed packages and a placeholder import
@@ -69,3 +71,15 @@ Phases 1 through 5 are complete. The next implementation work is Phase 6: HTTP b
 - Explicit pre-rename failure and post-rename commit behavior preventing disk/Manager divergence
 - Standalone thread-safe history with deep-copied payloads and safe non-positive limits
 - Configurable history capacity through `WithHistoryCapacity`
+
+## Phase 6 implementation summary
+
+- Reusable `HTTPServer.Handler` and zero-configuration `Manager.Handler`
+- Public idiomatic `HTTPServer` API with v1 spelling aliases
+- Error-returning standalone and supplied-server lifecycle
+- Correct supplied-handler fallback and external route-registrar integration
+- Strict operation-specific request decoding with exact integer semantics
+- Coherent snapshot responses and explicit 400/401/404/409/413/415/422/500 mappings
+- Configurable CORS, logging, authentication, timeouts, body size, and health policy
+- Digest-only API-key retention and constant-time comparison
+- Deterministic HTTP expected-version concurrency coverage

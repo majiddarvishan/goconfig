@@ -127,7 +127,7 @@ func (m *Manager) mutate(ctx context.Context, request mutationRequest) error {
 			handlerNode = oldNode
 		}
 		if err := modifiable.Handler(copyOptionalNode(handlerNode)); err != nil {
-			return err
+			return &ValidationError{Stage: "handler", Err: err}
 		}
 	}
 

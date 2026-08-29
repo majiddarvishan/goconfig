@@ -97,6 +97,8 @@ Implementation notes:
 
 ## Phase 6: Redesign the HTTP boundary
 
+Status: completed.
+
 - Expose a reusable `Handler() http.Handler` and make standalone serving a thin wrapper.
 - Return startup and shutdown errors instead of panicking or printing.
 - Correctly integrate user-provided servers and route registrars.
@@ -110,6 +112,15 @@ Acceptance criteria:
 
 - HTTP integration works with standalone, supplied-server, and supplied-router modes.
 - Concurrent requests with one expected version result in exactly one successful commit.
+
+Implementation notes:
+
+- `HTTPServer.Handler` and `Manager.Handler` expose the reusable boundary.
+- `Start`, `Shutdown`, `StartHTTPServer`, and `ShutdownHTTPServer` return lifecycle errors; legacy Manager methods remain deprecated adapters without panic/printing.
+- Supplied `http.Server` handlers are preserved as fallbacks, and route-registrar mode mounts the same handler without opening a listener.
+- POST uses an explicit strict request type, exact JSON integers, unknown/trailing-field rejection, operation-specific fields, and configurable body limits.
+- CORS, logger, authenticator/API key, timeouts, maximum body size, and health policy are options.
+- The HTTP server retains only an API-key digest and maps public errors without exposing persistence internals.
 
 ## Phase 7: Query, structure, and cleanup
 
@@ -139,3 +150,20 @@ Acceptance criteria:
 
 - All checks pass in a clean environment.
 - Critical mutation and concurrency behavior is covered by deterministic tests.
+
+## Phase 9: Organize the project and rebuild examples
+
+- Group implementation files into focused packages/directories where doing so improves ownership without introducing import cycles or unnecessary public API breaks.
+- Establish clear locations for core configuration, sources, validation, history, HTTP integration, internal helpers, tests, and documentation.
+- Keep the root public package stable through compatible forwarding APIs where files or implementations move.
+- Remove obsolete, duplicate, and misleading files after confirming their replacements.
+- Replace the known-invalid `examples/` tree with small, buildable examples that use the finalized public API.
+- Add examples for string and file sources, mutation/validation, history, HTTP handler integration, and external validation where practical.
+- Make examples part of `go test ./...` and CI verification.
+- Document the resulting repository layout and how each example is run.
+
+Acceptance criteria:
+
+- Every production file has a clear responsibility and package ownership.
+- `go test ./...` succeeds with all examples included.
+- Examples compile, run without placeholder imports, and demonstrate supported behavior rather than legacy internals.
