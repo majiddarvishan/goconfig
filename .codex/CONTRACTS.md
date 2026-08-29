@@ -2,7 +2,7 @@
 
 This document records the decisions made in Phase 2. It defines the target behavior for the refactoring phases while preserving the supported v1 surface where practical.
 
-The transaction, path, snapshot, numeric, schema-compilation, observer, and public Source portions of this contract are implemented as of Phase 4.
+The transaction, path, snapshot, numeric, schema-compilation, observer, public Source, validation, persistence, and history portions of this contract are implemented as of Phase 5.
 
 ## Compatibility policy
 
@@ -57,6 +57,27 @@ User callbacks must not execute while a Manager lock is held. If the committed v
 - Callers may later opt into a documented fail-open policy explicitly; fail-open is never implicit.
 - The request uses the caller/operation context and a bounded timeout.
 - External validation runs against the complete candidate configuration, not only the changed node.
+
+## Custom validation
+
+- Validators are pre-commit veto hooks and run for every registered operation after schema validation.
+- Replace validators receive the complete old/new value at the registered path.
+- Insert and remove validators receive the complete old/new target arrays, enabling collection-level rules such as uniqueness.
+- Numeric enum and uniqueness comparisons normalize exact JSON numeric values across integer and floating representations.
+- `ValidatePattern` uses regular-expression semantics; its legacy `*` match-all behavior remains compatible. New code can use `ValidateRegexp` to handle compilation errors immediately.
+
+## File persistence
+
+- `FileSource` writes a unique temporary file in the destination directory, preserves destination permission bits, syncs the temporary file, atomically renames it, and syncs the parent directory.
+- Any failure before rename leaves the destination file and Source snapshot unchanged and removes the temporary file.
+- Rename is the logical commit point. If the following directory sync fails, the replacement remains committed and Manager publishes the matching candidate rather than returning to a divergent in-memory snapshot.
+
+## History
+
+- `ChangeHistory` is safe for standalone concurrent access.
+- Stored and returned event indexes and JSON payloads are independent deep copies.
+- Non-positive query limits return an empty result.
+- Manager history capacity defaults to `DefaultHistoryCapacity` and can be set at construction with `WithHistoryCapacity`.
 
 ## Ordering
 

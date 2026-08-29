@@ -53,7 +53,10 @@ func (e *ValidationError) Error() string {
 	return fmt.Sprintf("%s validation failed: %v", e.Stage, e.Err)
 }
 
-func (e *ValidationError) Unwrap() error { return ErrValidation }
+func (e *ValidationError) Unwrap() error { return e.Err }
+func (e *ValidationError) Is(target error) bool {
+	return target == ErrValidation
+}
 
 // PersistenceError wraps a Source failure during commit.
 type PersistenceError struct {
@@ -61,4 +64,7 @@ type PersistenceError struct {
 }
 
 func (e *PersistenceError) Error() string { return fmt.Sprintf("failed to persist config: %v", e.Err) }
-func (e *PersistenceError) Unwrap() error { return ErrPersistence }
+func (e *PersistenceError) Unwrap() error { return e.Err }
+func (e *PersistenceError) Is(target error) bool {
+	return target == ErrPersistence
+}

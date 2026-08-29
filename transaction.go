@@ -3,6 +3,7 @@ package goconfig
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -91,6 +92,14 @@ func (m *Manager) mutate(ctx context.Context, request mutationRequest) error {
 	if err != nil {
 		return fmt.Errorf("failed to parse candidate value: %w", err)
 	}
+	oldCandidateNode, err := optionalNode(change.oldCandidate)
+	if err != nil {
+		return fmt.Errorf("failed to parse previous validation value: %w", err)
+	}
+	newCandidateNode, err := optionalNode(change.newCandidate)
+	if err != nil {
+		return fmt.Errorf("failed to parse candidate validation value: %w", err)
+	}
 
 	candidateJSON, err := json.Marshal(candidate)
 	if err != nil {
@@ -99,7 +108,7 @@ func (m *Manager) mutate(ctx context.Context, request mutationRequest) error {
 	if err := validateWithSchema(compiledSchema, candidateJSON); err != nil {
 		return &ValidationError{Stage: "schema", Err: err}
 	}
-	if err := m.customValidator.Validate(canonicalPath, copyOptionalNode(oldNode), copyOptionalNode(newNode)); err != nil {
+	if err := m.customValidator.Validate(canonicalPath, copyOptionalNode(oldCandidateNode), copyOptionalNode(newCandidateNode)); err != nil {
 		return &ValidationError{Stage: "custom", Err: err}
 	}
 	if externalValidator != nil {
@@ -141,9 +150,10 @@ func (m *Manager) mutate(ctx context.Context, request mutationRequest) error {
 		m.mu.Unlock()
 		return &VersionConflictError{Expected: baseVersion, Current: current}
 	}
-	if err := m.source.setConfig(candidate); err != nil {
+	persistenceErr := m.source.setConfig(candidate)
+	if persistenceErr != nil && !persistenceCommitted(persistenceErr) {
 		m.mu.Unlock()
-		return &PersistenceError{Err: err}
+		return &PersistenceError{Err: persistenceErr}
 	}
 
 	m.configObject = candidate
@@ -183,6 +193,14 @@ func (m *Manager) mutate(ctx context.Context, request mutationRequest) error {
 		observer(changeCopy)
 	}
 	return nil
+}
+
+func persistenceCommitted(err error) bool {
+	if err == nil {
+		return false
+	}
+	var committed interface{ committed() }
+	return errors.As(err, &committed)
 }
 
 func mutationModifiableType(kind mutationKind) (modifiableType, error) {

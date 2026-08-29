@@ -6,19 +6,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
+	"regexp"
+	"strconv"
 	"sync"
 	"time"
 )
 
-// validationService provides external configuration validation
-type validationService struct {
+// ValidationService provides external configuration validation.
+type ValidationService struct {
 	mu      sync.RWMutex
 	URL     string
 	Timeout time.Duration
 	Headers map[string]string
 	client  *http.Client
 }
+
+// validationService is retained for source compatibility inside the v1 API.
+// Deprecated: use ValidationService.
+type validationService = ValidationService
 
 // ValidationRequest is sent to the validation service
 type ValidationRequest struct {
@@ -34,13 +41,13 @@ type ValidationResponse struct {
 	Message string   `json:"message,omitempty"`
 }
 
-// NewvalidationService creates a new validation service client
-func NewvalidationService(url string, timeout time.Duration) *validationService {
-	if timeout == 0 {
+// NewValidationService creates a new validation service client.
+func NewValidationService(url string, timeout time.Duration) *ValidationService {
+	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
 
-	return &validationService{
+	return &ValidationService{
 		URL:     url,
 		Timeout: timeout,
 		Headers: make(map[string]string),
@@ -50,15 +57,21 @@ func NewvalidationService(url string, timeout time.Duration) *validationService 
 	}
 }
 
+// NewvalidationService retains the original misspelled constructor.
+// Deprecated: use NewValidationService.
+func NewvalidationService(url string, timeout time.Duration) *ValidationService {
+	return NewValidationService(url, timeout)
+}
+
 // SetHeader sets a custom header for validation requests
-func (vs *validationService) SetHeader(key, value string) {
+func (vs *ValidationService) SetHeader(key, value string) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 	vs.Headers[key] = value
 }
 
 // Validate sends configuration to external validation service
-func (vs *validationService) Validate(ctx context.Context, config, schema interface{}) error {
+func (vs *ValidationService) Validate(ctx context.Context, config, schema interface{}) error {
 	if vs.URL == "" {
 		return fmt.Errorf("validation service URL not configured")
 	}
@@ -117,24 +130,34 @@ func (vs *validationService) Validate(ctx context.Context, config, schema interf
 	return nil
 }
 
-// validatorFunc is a custom validation function
-type validatorFunc func(path string, oldValue, newValue *Node) error
+// Validator checks the complete value at a registered mutation path before and
+// after a candidate mutation. For insert and remove operations these values are
+// the complete target arrays, not only the changed element.
+type Validator func(path string, oldValue, newValue *Node) error
 
-// customValidator holds custom validation rules
-type customValidator struct {
+// validatorFunc retains the original internal name.
+// Deprecated: use Validator.
+type validatorFunc = Validator
+
+// CustomValidator holds custom validation rules.
+type CustomValidator struct {
 	mu         sync.RWMutex
-	validators map[string][]validatorFunc
+	validators map[string][]Validator
 }
 
-// NewcustomValidator creates a new custom validator
-func NewCustomValidator() *customValidator {
-	return &customValidator{
-		validators: make(map[string][]validatorFunc),
+// customValidator retains the original internal name.
+// Deprecated: use CustomValidator.
+type customValidator = CustomValidator
+
+// NewCustomValidator creates an empty custom validator registry.
+func NewCustomValidator() *CustomValidator {
+	return &CustomValidator{
+		validators: make(map[string][]Validator),
 	}
 }
 
 // AddValidator adds a validation function for a specific path
-func (cv *customValidator) AddValidator(path string, validator validatorFunc) {
+func (cv *CustomValidator) AddValidator(path string, validator Validator) {
 	if validator == nil {
 		return
 	}
@@ -144,10 +167,10 @@ func (cv *customValidator) AddValidator(path string, validator validatorFunc) {
 }
 
 // Validate runs all validators for the given path
-func (cv *customValidator) Validate(path string, oldValue, newValue *Node) error {
+func (cv *CustomValidator) Validate(path string, oldValue, newValue *Node) error {
 	cv.mu.RLock()
 	validators, exists := cv.validators[path]
-	validators = append([]validatorFunc(nil), validators...)
+	validators = append([]Validator(nil), validators...)
 	cv.mu.RUnlock()
 	if !exists {
 		return nil
@@ -163,7 +186,7 @@ func (cv *customValidator) Validate(path string, oldValue, newValue *Node) error
 }
 
 // ValidateAll runs validators for all registered paths
-func (cv *customValidator) ValidateAll(changes map[string]*Node) error {
+func (cv *CustomValidator) ValidateAll(changes map[string]*Node) error {
 	for path, newValue := range changes {
 		if err := cv.Validate(path, nil, newValue); err != nil {
 			return fmt.Errorf("validation failed at %s: %w", path, err)
@@ -175,7 +198,7 @@ func (cv *customValidator) ValidateAll(changes map[string]*Node) error {
 // Common validator functions
 
 // ValidateRange validates that a numeric value is within a range
-func ValidateRange(min, max float64) validatorFunc {
+func ValidateRange(min, max float64) Validator {
 	return func(path string, oldValue, newValue *Node) error {
 		if newValue == nil {
 			return nil
@@ -194,48 +217,60 @@ func ValidateRange(min, max float64) validatorFunc {
 	}
 }
 
-// ValidatePattern validates that a string matches a pattern
-func ValidatePattern(pattern string) validatorFunc {
+// ValidatePattern validates that a string matches a regular expression. The
+// legacy pattern "*" remains supported as a match-all expression.
+//
+// Deprecated: use ValidateRegexp when construction errors can be handled.
+func ValidatePattern(pattern string) Validator {
+	if pattern == "*" {
+		pattern = ".*"
+	}
+	validator, compileErr := ValidateRegexp(pattern)
+	return func(path string, oldValue, newValue *Node) error {
+		if compileErr != nil {
+			return fmt.Errorf("invalid validation pattern %q: %w", pattern, compileErr)
+		}
+		return validator(path, oldValue, newValue)
+	}
+}
+
+// ValidateRegexp compiles a regular expression validator.
+func ValidateRegexp(pattern string) (Validator, error) {
+	compiled, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
 	return func(path string, oldValue, newValue *Node) error {
 		if newValue == nil {
 			return nil
 		}
-
 		str, err := newValue.GetString()
 		if err != nil {
 			return fmt.Errorf("expected string value at %s", path)
 		}
-
-		// Simple pattern matching (could use regexp for more complex patterns)
-		if !matchPattern(str, pattern) {
+		if !compiled.MatchString(str) {
 			return fmt.Errorf("value '%s' at %s does not match pattern '%s'", str, path, pattern)
 		}
-
 		return nil
-	}
+	}, nil
 }
 
 // ValidateEnum validates that a value is one of allowed values
-func ValidateEnum(allowed ...interface{}) validatorFunc {
+func ValidateEnum(allowed ...interface{}) Validator {
 	return func(path string, oldValue, newValue *Node) error {
 		if newValue == nil {
 			return nil
 		}
 
-		var value interface{}
+		value := newValue.value
 		switch newValue.Type() {
-		case String:
-			value, _ = newValue.GetString()
-		case Integral, FloatingPoint:
-			value, _ = newValue.GetFloat()
-		case Boolean:
-			value, _ = newValue.GetBool()
+		case String, Integral, FloatingPoint, Boolean:
 		default:
 			return fmt.Errorf("unsupported type for enum validation at %s", path)
 		}
 
 		for _, a := range allowed {
-			if value == a {
+			if enumValuesEqual(value, a) {
 				return nil
 			}
 		}
@@ -245,7 +280,7 @@ func ValidateEnum(allowed ...interface{}) validatorFunc {
 }
 
 // ValidateRequired validates that a value is not null/empty
-func ValidateRequired() validatorFunc {
+func ValidateRequired() Validator {
 	return func(path string, oldValue, newValue *Node) error {
 		if newValue == nil || newValue.Type() == Null {
 			return fmt.Errorf("value at %s is required", path)
@@ -263,14 +298,14 @@ func ValidateRequired() validatorFunc {
 }
 
 // ValidateUnique validates that array elements are unique (for specific field)
-func ValidateUnique(field string) validatorFunc {
+func ValidateUnique(field string) Validator {
 	return func(path string, oldValue, newValue *Node) error {
 		if newValue == nil || newValue.Type() != Array {
 			return nil
 		}
 
 		arr, _ := newValue.GetArray()
-		seen := make(map[interface{}]bool)
+		seen := make(map[string]bool)
 
 		for i, item := range arr {
 			if item.Type() != Object {
@@ -282,33 +317,79 @@ func ValidateUnique(field string) validatorFunc {
 				continue
 			}
 
-			var value interface{}
-			switch fieldNode.Type() {
-			case String:
-				value, _ = fieldNode.GetString()
-			case Integral, FloatingPoint:
-				value, _ = fieldNode.GetFloat()
-			case Boolean:
-				value, _ = fieldNode.GetBool()
-			default:
+			key, ok := enumKey(fieldNode.value)
+			if !ok {
 				continue
 			}
 
-			if seen[value] {
-				return fmt.Errorf("duplicate value '%v' for field '%s' at %s[%d]", value, field, path, i)
+			if seen[key] {
+				return fmt.Errorf("duplicate value '%v' for field '%s' at %s[%d]", fieldNode.value, field, path, i)
 			}
-			seen[value] = true
+			seen[key] = true
 		}
 
 		return nil
 	}
 }
 
-func matchPattern(str, pattern string) bool {
-	// Simple wildcard matching (* matches any characters)
-	// For more complex patterns, use regexp
-	if pattern == "*" {
-		return true
+func enumValuesEqual(left, right interface{}) bool {
+	leftNumber, leftNumeric := normalizedNumber(left)
+	rightNumber, rightNumeric := normalizedNumber(right)
+	if leftNumeric || rightNumeric {
+		return leftNumeric && rightNumeric && leftNumber == rightNumber
 	}
-	return str == pattern
+	return left == right
+}
+
+func enumKey(value interface{}) (string, bool) {
+	if number, ok := normalizedNumber(value); ok {
+		return "number:" + number, true
+	}
+	switch typed := value.(type) {
+	case string:
+		return "string:" + typed, true
+	case bool:
+		return "bool:" + strconv.FormatBool(typed), true
+	default:
+		return "", false
+	}
+}
+
+func normalizedNumber(value interface{}) (string, bool) {
+	var text string
+	switch typed := value.(type) {
+	case json.Number:
+		text = typed.String()
+	case int:
+		text = strconv.FormatInt(int64(typed), 10)
+	case int8:
+		text = strconv.FormatInt(int64(typed), 10)
+	case int16:
+		text = strconv.FormatInt(int64(typed), 10)
+	case int32:
+		text = strconv.FormatInt(int64(typed), 10)
+	case int64:
+		text = strconv.FormatInt(typed, 10)
+	case uint:
+		text = strconv.FormatUint(uint64(typed), 10)
+	case uint8:
+		text = strconv.FormatUint(uint64(typed), 10)
+	case uint16:
+		text = strconv.FormatUint(uint64(typed), 10)
+	case uint32:
+		text = strconv.FormatUint(uint64(typed), 10)
+	case uint64:
+		text = strconv.FormatUint(typed, 10)
+	case float32:
+		text = strconv.FormatFloat(float64(typed), 'g', -1, 32)
+	case float64:
+		text = strconv.FormatFloat(typed, 'g', -1, 64)
+	default:
+		return "", false
+	}
+	number, ok := new(big.Rat).SetString(text)
+	if !ok {
+		return "", false
+	}
+	return number.RatString(), true
 }

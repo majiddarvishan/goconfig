@@ -13,7 +13,10 @@ Review and improve the core `goconfig` package. The code under `examples/` is kn
 5. Commit reacquires the Manager lock, rechecks the base version, persists the candidate, and atomically publishes config, Node view, paths, version, and history.
 6. Post-commit observers run after the Manager lock is released and cannot veto the committed change.
 7. `FileSource` and `StrSource` implement both the legacy v1 source contract and the new externally implementable `Source` API.
-8. Query, history, validation, and HTTP are consumers of coherent Manager snapshots.
+8. Custom validation receives complete path values before/after each mutation; external validation receives the complete candidate configuration and caller context.
+9. `FileSource` commits through a unique same-directory temporary file and atomic rename, preserving mode and syncing file/directory state.
+10. History is an independently synchronized bounded circular log whose inputs and outputs are deep-copied.
+11. Query, history, validation, and HTTP are consumers of coherent Manager snapshots.
 
 ## Working constraints
 
@@ -30,4 +33,4 @@ Review and improve the core `goconfig` package. The code under `examples/` is kn
 - The root and `history` packages have characterization tests and pass core compilation.
 - `examples/` is intentionally excluded from core checks because it contains mixed packages and a placeholder import.
 - The installed `staticcheck` binary is incompatible with the environment's Go standard library. `.codex/check.sh` runs it only when `RUN_STATICCHECK=1` and a compatible binary is available.
-- Phases 3 and 4 were completed with 50 tests, 64.7% root-package statement coverage, and passing race and vet checks.
+- Phases 3 through 5 were completed with 61 tests, 66.6% root-package statement coverage, 93.9% history coverage, and passing repeated, race, and vet checks.

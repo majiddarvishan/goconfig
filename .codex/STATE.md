@@ -16,6 +16,7 @@
 - [x] Core refactoring started.
 - [x] Phase 3 transactional mutation engine completed.
 - [x] Phase 4 Node and Source encapsulation completed.
+- [x] Phase 5 validation, persistence, and history hardening completed.
 
 ## Phase 2 decisions
 
@@ -29,13 +30,13 @@ Full contracts are in `CONTRACTS.md`.
 
 ## Implementation order
 
-Phases 1 through 4 are complete. The next implementation work is Phase 5: validation, persistence, and history hardening.
+Phases 1 through 5 are complete. The next implementation work is Phase 6: HTTP boundary redesign.
 
 ## Phase 1 verification
 
 - Core test packages: `.` and `./history`
-- Characterization and contract tests: 50
-- Statement coverage after Phase 4: 64.7% for the root package and 89.3% for `history`
+- Characterization and contract tests: 61
+- Statement coverage after Phase 5: 66.6% for the root package and 93.9% for `history`
 - `go test`, `go test -race`, and `go vet`: passing
 - Formatting check: passing
 - `go test ./...`: intentionally not an acceptance command because the excluded `examples/` directory contains mixed packages and a placeholder import
@@ -57,3 +58,14 @@ Phases 1 through 4 are complete. The next implementation work is Phase 5: valida
 - Public `Source`/`SourceData` contract and `NewManagerFromSource` for external implementations
 - Compiled-once JSON Schema reuse
 - Coherent HTTP config responses from one Manager snapshot
+
+## Phase 5 implementation summary
+
+- Public idiomatic validation API with deprecated-compatible legacy names
+- Complete candidate values for insert, remove, and replace custom validation
+- Context cancellation propagated through configured external validation
+- Real regular-expression validation and exact normalized numeric enum comparisons
+- Unique same-directory FileSource temporary files with permission preservation, cleanup, file sync, atomic rename, and directory sync
+- Explicit pre-rename failure and post-rename commit behavior preventing disk/Manager divergence
+- Standalone thread-safe history with deep-copied payloads and safe non-positive limits
+- Configurable history capacity through `WithHistoryCapacity`

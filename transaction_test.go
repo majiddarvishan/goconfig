@@ -1,13 +1,17 @@
 package goconfig
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/iancoleman/orderedmap"
 )
@@ -291,6 +295,100 @@ func TestConfiguredExternalValidationFailsClosed(t *testing.T) {
 	}
 	if got, _ := mustNodeAt(t, manager.Config(), "name").GetString(); got != "demo" {
 		t.Fatalf("name = %q, want demo", got)
+	}
+}
+
+func TestExternalValidationUsesMutationContext(t *testing.T) {
+	manager, _ := newTestManager(t)
+	name := mustNodeAt(t, manager.Config(), "name")
+	if err := manager.OnReplace(name, nil); err != nil {
+		t.Fatalf("OnReplace() error = %v", err)
+	}
+	service := NewValidationService("http://validator.test/validate", time.Second)
+	service.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})}
+	manager.SetValidationService(service)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := manager.mutate(ctx, mutationRequest{kind: mutationReplace, path: "/name", value: "updated"})
+	if !errors.Is(err, ErrValidation) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("mutate() error = %v, want validation wrapping context.Canceled", err)
+	}
+	if manager.Version() != 1 {
+		t.Fatalf("version = %d, want 1", manager.Version())
+	}
+}
+
+func TestInsertValidatorReceivesCompleteCandidateArray(t *testing.T) {
+	manager, _ := newTestManager(t)
+	items := mustNodeAt(t, manager.Config(), "items")
+	if err := manager.OnInsert(items, nil); err != nil {
+		t.Fatalf("OnInsert() error = %v", err)
+	}
+	manager.AddValidator("/items", ValidateUnique("id"))
+
+	err := manager.insert("/items", 1, map[string]interface{}{"id": 1, "name": "duplicate"})
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("insert() error = %v, want ErrValidation", err)
+	}
+	array, _ := mustNodeAt(t, manager.Config(), "items").GetArray()
+	if manager.Version() != 1 || len(array) != 2 {
+		t.Fatal("failed validation changed manager state")
+	}
+}
+
+func TestRemoveValidatorReceivesCompleteCandidateArray(t *testing.T) {
+	manager, _ := newTestManager(t)
+	items := mustNodeAt(t, manager.Config(), "items")
+	if err := manager.OnRemove(items, nil); err != nil {
+		t.Fatalf("OnRemove() error = %v", err)
+	}
+	manager.AddValidator("/items", func(_ string, oldValue, newValue *Node) error {
+		oldItems, _ := oldValue.GetArray()
+		newItems, _ := newValue.GetArray()
+		if len(oldItems) != 2 || len(newItems) != 1 {
+			return errors.New("validator did not receive complete arrays")
+		}
+		return nil
+	})
+
+	if err := manager.remove("/items", 0); err != nil {
+		t.Fatalf("remove() error = %v", err)
+	}
+}
+
+func TestCommittedDirectorySyncFailureKeepsManagerAndFileConsistent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(testConfigJSON), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	source, err := NewFileSource(path, testSchemaJSON)
+	if err != nil {
+		t.Fatalf("NewFileSource() error = %v", err)
+	}
+	manager, err := NewManager(source)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	name := mustNodeAt(t, manager.Config(), "name")
+	if err := manager.OnReplace(name, nil); err != nil {
+		t.Fatalf("OnReplace() error = %v", err)
+	}
+	source.ops.dirSync = func(*os.File) error { return errors.New("injected directory sync failure") }
+
+	if err := manager.replace("/name", "committed"); err != nil {
+		t.Fatalf("replace() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	got, _ := mustNodeAt(t, manager.Config(), "name").GetString()
+	if got != "committed" || !strings.Contains(string(data), `"committed"`) {
+		t.Fatalf("manager and disk diverged: manager=%q disk=%s", got, data)
 	}
 }
 

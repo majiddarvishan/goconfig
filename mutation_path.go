@@ -17,8 +17,10 @@ const (
 )
 
 type mutationChange struct {
-	oldValue interface{}
-	newValue interface{}
+	oldValue     interface{}
+	newValue     interface{}
+	oldCandidate interface{}
+	newCandidate interface{}
 }
 
 func applyMutation(root *orderedmap.OrderedMap, kind mutationKind, pointer string, index int, value interface{}) (mutationChange, error) {
@@ -51,7 +53,15 @@ func applyMutation(root *orderedmap.OrderedMap, kind mutationKind, pointer strin
 		if err := setJSONValue(root, segments, updated, pointer); err != nil {
 			return mutationChange{}, err
 		}
-		return mutationChange{newValue: normalized}, nil
+		oldCandidate, err := cloneJSONValue(array)
+		if err != nil {
+			return mutationChange{}, err
+		}
+		newCandidate, err := cloneJSONValue(updated)
+		if err != nil {
+			return mutationChange{}, err
+		}
+		return mutationChange{newValue: normalized, oldCandidate: oldCandidate, newCandidate: newCandidate}, nil
 
 	case mutationRemove:
 		target, err := lookupJSONValue(root, segments, pointer)
@@ -75,7 +85,15 @@ func applyMutation(root *orderedmap.OrderedMap, kind mutationKind, pointer strin
 		if err := setJSONValue(root, segments, updated, pointer); err != nil {
 			return mutationChange{}, err
 		}
-		return mutationChange{oldValue: oldValue}, nil
+		oldCandidate, err := cloneJSONValue(array)
+		if err != nil {
+			return mutationChange{}, err
+		}
+		newCandidate, err := cloneJSONValue(updated)
+		if err != nil {
+			return mutationChange{}, err
+		}
+		return mutationChange{oldValue: oldValue, oldCandidate: oldCandidate, newCandidate: newCandidate}, nil
 
 	case mutationReplace:
 		oldValue, err := lookupJSONValue(root, segments, pointer)
@@ -93,7 +111,7 @@ func applyMutation(root *orderedmap.OrderedMap, kind mutationKind, pointer strin
 		if err := setJSONValue(root, segments, normalized, pointer); err != nil {
 			return mutationChange{}, err
 		}
-		return mutationChange{oldValue: oldValue, newValue: normalized}, nil
+		return mutationChange{oldValue: oldValue, newValue: normalized, oldCandidate: oldValue, newCandidate: normalized}, nil
 	default:
 		return mutationChange{}, fmt.Errorf("unsupported mutation kind %q", kind)
 	}

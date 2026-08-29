@@ -2,6 +2,7 @@ package goconfig_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/majiddarvishan/goconfig"
 )
@@ -24,6 +25,24 @@ func TestExternalPackageCanImplementSource(t *testing.T) {
 	if got, err := manager.Config().GetString("name"); err != nil || got != "external" {
 		t.Fatalf("name = %q, %v", got, err)
 	}
+}
+
+func TestExternalPackageCanUsePhaseFiveAPIs(t *testing.T) {
+	source := &externalSource{
+		config: []byte(`{"name":"external"}`),
+		schema: []byte(`{"type":"object","properties":{"name":{"type":"string"}}}`),
+	}
+	manager, err := goconfig.NewManagerFromSourceWithOptions(source, goconfig.WithHistoryCapacity(2))
+	if err != nil {
+		t.Fatalf("NewManagerFromSourceWithOptions() error = %v", err)
+	}
+	var validator goconfig.Validator = goconfig.ValidateRequired()
+	manager.AddValidator("/name", validator)
+	registry := goconfig.NewCustomValidator()
+	registry.AddValidator("/name", validator)
+	service := goconfig.NewValidationService("http://validator.test", time.Second)
+	service.SetHeader("X-Test", "value")
+	manager.SetValidationService(service)
 }
 
 type externalSource struct {

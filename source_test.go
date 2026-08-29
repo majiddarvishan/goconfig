@@ -2,6 +2,7 @@ package goconfig
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -97,5 +98,49 @@ func TestFileSourcePersistsConfiguration(t *testing.T) {
 	}
 	if decoded["name"] != "persisted" {
 		t.Fatalf("persisted name = %v, want persisted", decoded["name"])
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat persisted config: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("persisted permissions = %o, want 600", got)
+	}
+	tempFiles, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".config.json.tmp-*"))
+	if err != nil || len(tempFiles) != 0 {
+		t.Fatalf("temporary files = %v, error = %v", tempFiles, err)
+	}
+}
+
+func TestFileSourceFailureBeforeRenameLeavesDiskAndMemoryUnchanged(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.json")
+	if err := os.WriteFile(path, []byte(testConfigJSON), 0o640); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	source, err := NewFileSource(path, testSchemaJSON)
+	if err != nil {
+		t.Fatalf("NewFileSource() error = %v", err)
+	}
+	source.ops.rename = func(string, string) error { return errors.New("injected rename failure") }
+	updated, err := Clone(source.getConfigObject())
+	if err != nil {
+		t.Fatalf("Clone() error = %v", err)
+	}
+	updated.Set("name", "not-committed")
+
+	if err := source.setConfig(updated); err == nil {
+		t.Fatal("setConfig() error = nil, want injected error")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(data) != testConfigJSON || *source.getConfig() != testConfigJSON {
+		t.Fatalf("source changed after failed rename: disk=%s memory=%s", data, *source.getConfig())
+	}
+	tempFiles, _ := filepath.Glob(filepath.Join(directory, ".config.json.tmp-*"))
+	if len(tempFiles) != 0 {
+		t.Fatalf("temporary files were not cleaned up: %v", tempFiles)
 	}
 }

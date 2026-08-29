@@ -69,6 +69,8 @@ Acceptance criteria:
 
 ## Phase 5: Correct validation, persistence, and history
 
+Status: completed.
+
 - Export and rename validation types idiomatically.
 - Validate complete candidate values consistently for insert, remove, and replace.
 - Integrate external validation into the mutation pipeline with context support.
@@ -82,6 +84,16 @@ Acceptance criteria:
 - Every mutation goes through the same validation policy.
 - Persistence failure injection leaves both disk and memory in a defined state.
 - History cannot be mutated indirectly by callers.
+
+Implementation notes:
+
+- `Validator`, `CustomValidator`, `ValidationService`, and correctly cased constructors are public; v1 compatibility adapters remain available.
+- Insert/remove validators receive complete target arrays before and after mutation, while replace validators receive complete target values.
+- `ValidatePattern` now has regex semantics with legacy `*` support; `ValidateRegexp` reports compilation errors at construction time.
+- Numeric enum/unique comparisons normalize exact rational values rather than coercing all numbers to `float64`.
+- File replacement uses a unique same-directory temporary file, preserves permissions, syncs content and the parent directory, and cleans temporary files on failure.
+- Rename is the persistence commit point: pre-rename failures change neither disk nor memory; a post-rename directory-sync failure is treated as committed so Source and Manager snapshots cannot diverge.
+- History owns deep copies, validates read limits, serializes standalone access, and has configurable Manager capacity.
 
 ## Phase 6: Redesign the HTTP boundary
 

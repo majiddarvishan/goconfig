@@ -2,6 +2,7 @@ package goconfig
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -38,6 +39,27 @@ func TestCommonValidators(t *testing.T) {
 	if err := ValidateEnum("a", "b")("/value", nil, mustParseNode(t, "b")); err != nil {
 		t.Fatalf("ValidateEnum(valid) error = %v", err)
 	}
+	if err := ValidateEnum(1)("/value", nil, mustParseNode(t, json.Number("1.0"))); err != nil {
+		t.Fatalf("ValidateEnum(normalized number) error = %v", err)
+	}
+	if err := ValidateEnum(json.Number("9007199254740993"))("/value", nil, mustParseNode(t, json.Number("9007199254740992"))); err == nil {
+		t.Fatal("ValidateEnum(distinct large integers) error = nil, want error")
+	}
+	if err := ValidatePattern(`^[a-z]+-[0-9]+$`)("/value", nil, mustParseNode(t, "item-42")); err != nil {
+		t.Fatalf("ValidatePattern(valid regexp) error = %v", err)
+	}
+	if err := ValidatePattern(`^[a-z]+$`)("/value", nil, mustParseNode(t, "42")); err == nil {
+		t.Fatal("ValidatePattern(non-match) error = nil, want error")
+	}
+	if err := ValidatePattern(`[`)("/value", nil, mustParseNode(t, "value")); err == nil {
+		t.Fatal("ValidatePattern(invalid regexp) error = nil, want error")
+	}
+	if err := ValidatePattern(`*`)("/value", nil, mustParseNode(t, "legacy")); err != nil {
+		t.Fatalf("ValidatePattern(legacy wildcard) error = %v", err)
+	}
+	if _, err := ValidateRegexp(`[`); err == nil {
+		t.Fatal("ValidateRegexp(invalid regexp) error = nil, want construction error")
+	}
 
 	array := mustParseNode(t, []interface{}{
 		map[string]interface{}{"id": "same"},
@@ -49,7 +71,7 @@ func TestCommonValidators(t *testing.T) {
 }
 
 func TestValidationServiceRequest(t *testing.T) {
-	service := NewvalidationService("http://validator.test/validate", time.Second)
+	service := NewValidationService("http://validator.test/validate", time.Second)
 	service.SetHeader("X-Test-Token", "token")
 	service.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Method != http.MethodPost {

@@ -2,9 +2,9 @@
 
 ## Resolution status
 
-Phases 3 and 4 resolve the original findings concerning temporary publication of mutations, optimistic-locking races, direct array replacement, duplicated reflection-based traversal, ineffective path caching, mutable Manager/Source snapshots, silent numeric truncation, unsupported-value coercion, repeated schema compilation, and the externally unimplementable source abstraction.
+Phases 3 through 5 resolve the original findings concerning temporary publication of mutations, optimistic-locking races, direct array replacement, duplicated reflection-based traversal, ineffective path caching, mutable Manager/Source snapshots, silent numeric truncation, unsupported-value coercion, repeated schema compilation, the externally unimplementable source abstraction, inconsistent custom validation, FileSource atomicity/durability, and unsafe history payloads.
 
-The remaining active work starts at Phase 5: validator API cleanup, FileSource durability details, history deep-copy/thread-safety guarantees, and the broader HTTP lifecycle redesign.
+The remaining active work starts at Phase 6: HTTP lifecycle and integration redesign, followed by query/structural cleanup and final hardening.
 
 ## Critical findings
 

@@ -47,10 +47,10 @@ type Manager struct {
 	historyEnabled bool
 
 	// Custom validators
-	customValidator *customValidator
+	customValidator *CustomValidator
 
 	// External validation
-	validationService *validationService
+	validationService *ValidationService
 
 	// Http Server
 	httpServer *HttpServer
@@ -60,8 +60,17 @@ type Manager struct {
 }
 
 func NewManager(source ISource) (*Manager, error) {
+	return NewManagerWithOptions(source)
+}
+
+// NewManagerWithOptions constructs a Manager with explicit options.
+func NewManagerWithOptions(source ISource, options ...ManagerOption) (*Manager, error) {
 	if source == nil {
 		return nil, errors.New("source cannot be nil")
+	}
+	settings, err := applyManagerOptions(options)
+	if err != nil {
+		return nil, err
 	}
 
 	configObject, err := Clone(source.getConfigObject())
@@ -94,7 +103,7 @@ func NewManager(source ISource) (*Manager, error) {
 		compiledSchema:  compiledSchema,
 		modifiables:     make([]modifiable, 0),
 		version:         1,
-		history:         history.NewChangeHistory(1000),
+		history:         history.NewChangeHistory(settings.historyCapacity),
 		historyEnabled:  true,
 		customValidator: NewCustomValidator(),
 	}
@@ -106,11 +115,17 @@ func NewManager(source ISource) (*Manager, error) {
 // NewManagerFromSource constructs a Manager from the public, externally
 // implementable Source contract.
 func NewManagerFromSource(source Source) (*Manager, error) {
+	return NewManagerFromSourceWithOptions(source)
+}
+
+// NewManagerFromSourceWithOptions constructs a Manager from a public Source
+// with explicit options.
+func NewManagerFromSourceWithOptions(source Source, options ...ManagerOption) (*Manager, error) {
 	adapter, err := newSourceAdapter(source)
 	if err != nil {
 		return nil, err
 	}
-	return NewManager(adapter)
+	return NewManagerWithOptions(adapter, options...)
 }
 
 // Config returns an independent snapshot of the current config.
@@ -170,19 +185,19 @@ func (m *Manager) addHistoryEvent(event history.ChangeEvent) {
 // VALIDATION
 ////////////////////////////////////////////////////////////////////////////////
 
-func (m *Manager) SetValidationService(service *validationService) {
+func (m *Manager) SetValidationService(service *ValidationService) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.validationService = service
 }
 
-func (m *Manager) AddValidator(path string, validator validatorFunc) {
+func (m *Manager) AddValidator(path string, validator Validator) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.customValidator.AddValidator(path, validator)
 }
 
-func (m *Manager) GetCustomValidator() *customValidator {
+func (m *Manager) GetCustomValidator() *CustomValidator {
 	return m.customValidator
 }
 
