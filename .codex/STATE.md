@@ -21,6 +21,7 @@
 - [x] Phase 7 query, structure, and cleanup completed.
 - [x] Phase 8 verification and hardening completed.
 - [x] Phase 9 repository organization and executable examples completed.
+- [x] Phase 10 compact root facade and internal core organization completed.
 
 ## Phase 2 decisions
 
@@ -34,13 +35,13 @@ Full contracts are in `CONTRACTS.md`.
 
 ## Implementation order
 
-Phases 1 through 9 are complete. No planned implementation phase remains.
+Phases 1 through 10 are complete. No planned implementation phase remains.
 
 ## Phase 1 verification
 
 - Full repository test target: `./...`
 - Deterministic tests after Phase 8: 89, plus 4 fuzz targets and 3 benchmarks
-- Statement coverage after Phase 8: 75.0% for the root package and 93.9% for `history`
+- Statement coverage after Phase 8: 75.0% for the core implementation package and 93.9% for `history`
 - `go test`, `go test -race`, and `go vet`: passing
 - Formatting check: passing
 - `go test ./...`: passing with every example package included
@@ -115,3 +116,10 @@ Phases 1 through 9 are complete. No planned implementation phase remains.
 - Legacy mixed-package examples removed and replaced by six independent topic directories
 - Runnable examples for string/file sources, mutation validation, history, HTTP handlers, and external validation
 - Recursive formatting, tests, race detection, vet, repetition, and CI now include every example through `./...`
+
+## Phase 10 implementation summary
+
+- Production implementation and white-box verification grouped in `internal/core`
+- Root reduced to a compact public facade; external-consumer verification grouped under `contract/`
+- Public type identity and method sets preserved through aliases; constructors, options, errors, and constants remain available at the original import path
+- Fuzz and benchmark commands retargeted to the internal implementation package

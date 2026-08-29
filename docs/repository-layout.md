@@ -1,18 +1,20 @@
 # Repository layout
 
-The repository follows Go's convention of keeping the public package at the module root. Moving the implementation behind forwarding wrappers would add import cycles or duplicate a large public surface, so focused root files remain the ownership boundary for `goconfig`.
+The repository keeps the stable public import path at the module root while grouping its implementation in `internal/core`. A compact facade uses type aliases and constructor forwarding, so existing source code continues to import `github.com/majiddarvishan/goconfig` while implementation details stay out of the root directory.
 
 | Location | Responsibility |
 | --- | --- |
-| `manager*.go`, `transaction.go` | Manager state, options, mutations, validation, history, and HTTP lifecycle integration |
-| `source.go`, `string_source.go`, `file_source.go` | Public source contracts and built-in persistence implementations |
-| `node*.go`, `path.go`, `mutation_path.go`, `query.go`, `json_codec.go` | JSON values, canonical paths, traversal, queries, and safe cloning |
-| `validator.go`, `validation_service.go` | Schema, custom, and external validation |
-| `http_server.go`, `route_registrar.go` | Reusable HTTP boundary and router integration |
+| `goconfig.go` | Stable public facade, exported aliases, constructors, options, constants, and errors |
+| `internal/core/manager*.go`, `internal/core/transaction.go` | Manager state, options, mutations, validation, history, and HTTP lifecycle integration |
+| `internal/core/*source.go` | Source contracts and built-in persistence implementations |
+| `internal/core/node*.go`, path/query/codec files | JSON values, canonical paths, traversal, queries, and safe cloning |
+| `internal/core/validator.go`, `internal/core/validation_service.go` | Schema, custom, and external validation |
+| `internal/core/http_server.go`, `internal/core/route_registrar.go` | Reusable HTTP boundary and router integration |
 | `history/` | Independently reusable bounded change-history package |
+| `contract/` | Black-box compatibility tests against the root public facade |
 | `examples/<topic>/` | Independent executable programs using only supported public APIs |
 | `docs/` | User-facing design and integration documentation |
 | `.codex/` | Review records, phased plan, verification commands, and benchmark baselines |
 | `.github/workflows/` | Clean-checkout CI automation |
 
-White-box tests and benchmarks stay adjacent to the package they verify. This keeps unexported behavior testable without creating artificial test-only packages. Every example is a separate `main` package so the complete tree can be checked with `go test ./...`.
+White-box tests and benchmarks stay beside `internal/core`, while `contract/` verifies that the facade remains usable by external consumers. Every example is a separate `main` package so the complete tree can be checked with `go test ./...`.

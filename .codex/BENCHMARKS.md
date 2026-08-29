@@ -5,7 +5,7 @@ Recorded during Phase 8 on Linux/amd64 with Go's default benchmark settings exce
 Command:
 
 ```bash
-go test -run '^$' -bench 'Benchmark(Clone|CompiledSchemaValidation|NodeAtJSONPointer)$' -benchmem -benchtime 100x .
+go test -run '^$' -bench 'Benchmark(Clone|CompiledSchemaValidation|NodeAtJSONPointer)$' -benchmem -benchtime 100x ./internal/core
 ```
 
 Initial measurements:

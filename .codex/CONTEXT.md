@@ -19,6 +19,7 @@ Review and improve the `goconfig` module. The originally supplied `examples/` we
 11. HTTP exposes one reusable handler across standalone, supplied-server, and route-registrar ownership modes with strict input and coherent responses.
 12. Query and `FindAll` traverse independent snapshots, return canonical JSON Pointer paths, and use deterministic lexical object order.
 13. Public direct mutation, HTTP mutation, validation, persistence, history, and observers share the same transaction engine.
+14. The module root is a stable facade; cohesive implementation and white-box tests live in `internal/core`.
 
 ## Working constraints
 

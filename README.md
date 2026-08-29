@@ -144,3 +144,7 @@ Buildable examples for string and file sources, mutation validation, history,
 HTTP handler integration, and external validation live in
 [examples/](examples/README.md). They use supported APIs and are compiled by
 `go test ./...`.
+
+The implementation is grouped under `internal/core`; the module root remains a
+small compatibility facade at the original import path. See
+[docs/repository-layout.md](docs/repository-layout.md) for ownership details.

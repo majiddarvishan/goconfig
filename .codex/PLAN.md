@@ -174,7 +174,7 @@ Implementation notes:
 - Added fuzz targets for JSON Pointer round trips, query parsing/traversal, strict HTTP mutation decoding, and the unified mutation engine.
 - Added allocation-reporting benchmarks for cloning, compiled-schema validation, and JSON Pointer node lookup; the initial measurements are recorded in `.codex/BENCHMARKS.md`.
 - Added GitHub Actions checks on Go 1.18 and stable Go, plus repeated tests, bounded fuzzing, benchmark smoke tests, race detection, formatting, and vet.
-- The core suite now contains 89 deterministic tests plus 4 fuzz targets and 3 benchmarks. Root statement coverage is 75.0%; history coverage is 93.9%.
+- The core suite now contains 89 deterministic tests plus 4 fuzz targets and 3 benchmarks. Core implementation statement coverage is 75.0%; history coverage is 93.9%.
 
 ## Phase 9: Organize the project and rebuild examples
 
@@ -202,3 +202,18 @@ Implementation notes:
 - Replaced the mixed, placeholder-import example files with six independent `examples/<topic>` programs using only finalized public APIs.
 - Added runnable coverage for string and file sources, mutations with custom validation, bounded history, HTTP handler integration, and external validation.
 - Expanded `.codex/check.sh` and CI to format, test, race-test, and vet `./...`, making every example part of clean-checkout verification.
+
+## Phase 10: Compact the module root
+
+Status: completed.
+
+- Move cohesive implementation and white-box tests to `internal/core`.
+- Preserve the root import path and public method sets through a compact facade.
+- Keep the externally reusable `history` package and topic-based examples in their existing directories.
+- Retarget fuzzing, benchmarks, documentation, and verification to the new ownership boundary.
+
+Acceptance criteria:
+
+- Existing consumers continue importing `github.com/majiddarvishan/goconfig` without source changes.
+- External Source implementations, examples, and the complete test suite compile through the facade.
+- Root implementation clutter is replaced by one public facade file.

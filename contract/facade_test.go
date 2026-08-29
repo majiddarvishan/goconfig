@@ -1,4 +1,4 @@
-package goconfig_test
+package contract_test
 
 import (
 	"net/http"

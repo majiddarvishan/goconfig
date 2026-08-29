@@ -27,12 +27,12 @@ if [[ "${RUN_FUZZ:-0}" == "1" ]]; then
     FuzzApplyMutation
   )
   for target in "${fuzz_targets[@]}"; do
-    go test -run '^$' -fuzz "^${target}$" -fuzztime "$fuzz_time" .
+    go test -run '^$' -fuzz "^${target}$" -fuzztime "$fuzz_time" ./internal/core
   done
 fi
 
 if [[ "${RUN_BENCHMARKS:-0}" == "1" ]]; then
-  go test -run '^$' -bench . -benchmem -benchtime "${BENCH_TIME:-1x}" .
+  go test -run '^$' -bench . -benchmem -benchtime "${BENCH_TIME:-1x}" ./internal/core
 fi
 
 if [[ "${RUN_STATICCHECK:-0}" == "1" ]]; then
