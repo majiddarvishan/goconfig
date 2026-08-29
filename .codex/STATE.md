@@ -19,6 +19,7 @@
 - [x] Phase 5 validation, persistence, and history hardening completed.
 - [x] Phase 6 HTTP boundary redesign completed.
 - [x] Phase 7 query, structure, and cleanup completed.
+- [x] Phase 8 verification and hardening completed.
 - [x] Phase 9 repository-organization and executable-examples phase added to the roadmap.
 
 ## Phase 2 decisions
@@ -33,13 +34,13 @@ Full contracts are in `CONTRACTS.md`.
 
 ## Implementation order
 
-Phases 1 through 7 are complete. The next implementation work is Phase 8: verification and hardening. Phase 9 will then reorganize the repository and rebuild `examples/` as supported, executable programs.
+Phases 1 through 8 are complete. The next implementation work is Phase 9: reorganize the repository and rebuild `examples/` as supported, executable programs.
 
 ## Phase 1 verification
 
 - Core test packages: `.` and `./history`
-- Characterization and contract tests: 86
-- Statement coverage after Phase 7: 73.9% for the root package and 93.9% for `history`
+- Deterministic tests after Phase 8: 89, plus 4 fuzz targets and 3 benchmarks
+- Statement coverage after Phase 8: 75.0% for the root package and 93.9% for `history`
 - `go test`, `go test -race`, and `go vet`: passing
 - Formatting check: passing
 - `go test ./...`: intentionally not an acceptance command because the excluded `examples/` directory contains mixed packages and a placeholder import
@@ -97,3 +98,12 @@ Phases 1 through 7 are complete. The next implementation work is Phase 8: verifi
 - Typed invalid/denied mutation and query errors
 - Idiomatic history, validation, HTTP, and snapshot APIs with compatibility adapters
 - Root README synchronized with implemented public behavior
+
+## Phase 8 implementation summary
+
+- End-to-end HTTP transport, transaction, FileSource persistence, history, and read integration coverage
+- Deterministic persistence failure injection with rollback and temporary-file cleanup assertions
+- External-validation transport, status, decoding, and rejection failure coverage
+- Fuzz targets for JSON Pointer, query traversal, HTTP decoding, and mutation application
+- Benchmarks for cloning, compiled-schema validation, and path lookup, with recorded baselines
+- CI on minimum and stable Go versions with format, tests, race, vet, repetition, bounded fuzzing, and benchmark smoke runs

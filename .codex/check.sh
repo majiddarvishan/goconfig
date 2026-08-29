@@ -13,9 +13,26 @@ if [[ -n "$unformatted" ]]; then
   exit 1
 fi
 
-go test "${packages[@]}"
+go test -count=1 "${packages[@]}"
 go test -race "${packages[@]}"
 go vet "${packages[@]}"
+
+if [[ "${RUN_FUZZ:-0}" == "1" ]]; then
+  fuzz_time="${FUZZ_TIME:-5s}"
+  fuzz_targets=(
+    FuzzJSONPointerRoundTrip
+    FuzzQueryParsingAndTraversal
+    FuzzHTTPMutationRequest
+    FuzzApplyMutation
+  )
+  for target in "${fuzz_targets[@]}"; do
+    go test -run '^$' -fuzz "^${target}$" -fuzztime "$fuzz_time" .
+  done
+fi
+
+if [[ "${RUN_BENCHMARKS:-0}" == "1" ]]; then
+  go test -run '^$' -bench . -benchmem -benchtime "${BENCH_TIME:-1x}" .
+fi
 
 if [[ "${RUN_STATICCHECK:-0}" == "1" ]]; then
   staticcheck "${packages[@]}"

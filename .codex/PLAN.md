@@ -152,6 +152,8 @@ Implementation notes:
 
 ## Phase 8: Verification and hardening
 
+Status: completed.
+
 - Add integration tests for FileSource and HTTP.
 - Add concurrency and race tests.
 - Add fuzz tests for paths, query expressions, JSON requests, and mutations.
@@ -164,7 +166,19 @@ Acceptance criteria:
 - All checks pass in a clean environment.
 - Critical mutation and concurrency behavior is covered by deterministic tests.
 
+Implementation notes:
+
+- Added an end-to-end HTTP transport test covering authentication, mutation, transaction publication, FileSource persistence, history, and coherent reads without requiring a network listener.
+- Added deterministic FileSource failure injection at temporary-file creation, file sync, directory open, and rename, including disk/memory rollback and temporary-file cleanup assertions.
+- Added external-validation injection for transport, HTTP status, malformed response, and explicit rejection failures, with candidate rollback assertions.
+- Added fuzz targets for JSON Pointer round trips, query parsing/traversal, strict HTTP mutation decoding, and the unified mutation engine.
+- Added allocation-reporting benchmarks for cloning, compiled-schema validation, and JSON Pointer node lookup; the initial measurements are recorded in `.codex/BENCHMARKS.md`.
+- Added GitHub Actions checks on Go 1.18 and stable Go, plus repeated tests, bounded fuzzing, benchmark smoke tests, race detection, formatting, and vet.
+- The core suite now contains 89 deterministic tests plus 4 fuzz targets and 3 benchmarks. Root statement coverage is 75.0%; history coverage is 93.9%.
+
 ## Phase 9: Organize the project and rebuild examples
+
+Status: next.
 
 - Group implementation files into focused packages/directories where doing so improves ownership without introducing import cycles or unnecessary public API breaks.
 - Establish clear locations for core configuration, sources, validation, history, HTTP integration, internal helpers, tests, and documentation.
