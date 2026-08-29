@@ -149,6 +149,7 @@ Status mapping:
 
 - `400` malformed or semantically invalid request
 - `401` failed authentication
+- `403` path is not registered for the requested mutation
 - `404` configuration path not found
 - `409` expected-version conflict
 - `413` request body too large

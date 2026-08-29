@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/iancoleman/orderedmap"
 	"github.com/majiddarvishan/goconfig/history"
@@ -18,6 +19,8 @@ type mutationRequest struct {
 	value           interface{}
 	expectedVersion *int64
 }
+
+var timeNow = time.Now
 
 // Change is an immutable description delivered to post-commit observers.
 type Change struct {

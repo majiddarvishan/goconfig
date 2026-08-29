@@ -124,6 +124,8 @@ Implementation notes:
 
 ## Phase 7: Query, structure, and cleanup
 
+Status: completed.
+
 - Use the canonical escaped path implementation in query and mutation code.
 - Make wildcard/filter error behavior explicit and deterministic.
 - Never invoke predicates with mutable internal nodes under a Manager lock.
@@ -136,6 +138,17 @@ Acceptance criteria:
 
 - Public API documentation matches behavior.
 - Core files have focused responsibilities and no duplicated path traversal logic.
+
+Implementation notes:
+
+- Direct query segments and result paths use canonical escaped JSON Pointer semantics; plain array indexes are supported alongside compatible bracket syntax.
+- `Lookup` provides exact, non-wildcard JSON Pointer access for otherwise ambiguous keys.
+- Wildcard/filter traversal is lexical and fail-fast on the first deterministic branch error instead of silently discarding it.
+- `FindAll` traverses an independent snapshot and never invokes predicates under a Manager lock.
+- Manager history, validation, HTTP, and mutation responsibilities are split into focused files.
+- Public `Mutation`/`Mutate` and `Insert`/`Remove`/`Replace` APIs expose the transactional engine outside HTTP.
+- Idiomatic `History`, `HistoryByPath`, `CustomValidator`, `RegisterValidator`, `Snapshot`, `HTTPServer`, and related names coexist with deprecated v1 adapters.
+- The stale root README and dead schema-validation wrapper were replaced/removed.
 
 ## Phase 8: Verification and hardening
 

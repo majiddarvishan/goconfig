@@ -13,7 +13,28 @@ var (
 	ErrVersionConflict = errors.New("configuration version conflict")
 	ErrValidation      = errors.New("configuration validation failed")
 	ErrPersistence     = errors.New("configuration persistence failed")
+	ErrInvalidQuery    = errors.New("invalid configuration query")
+	ErrQueryNoResults  = errors.New("configuration query returned no results")
+	ErrInvalidMutation = errors.New("invalid configuration mutation")
+	ErrMutationDenied  = errors.New("configuration mutation is not registered")
 )
+
+// QueryError describes query parsing or traversal failure.
+type QueryError struct {
+	Query string
+	Path  string
+	Err   error
+	Msg   string
+}
+
+func (e *QueryError) Error() string {
+	if e.Path == "" {
+		return fmt.Sprintf("query %q: %s: %v", e.Query, e.Msg, e.Err)
+	}
+	return fmt.Sprintf("query %q at %q: %s: %v", e.Query, e.Path, e.Msg, e.Err)
+}
+
+func (e *QueryError) Unwrap() error { return e.Err }
 
 // PathError describes a typed path traversal or mutation failure.
 type PathError struct {

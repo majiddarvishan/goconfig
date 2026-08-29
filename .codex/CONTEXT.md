@@ -17,7 +17,8 @@ Review and improve the core `goconfig` package. The current code under `examples
 9. `FileSource` commits through a unique same-directory temporary file and atomic rename, preserving mode and syncing file/directory state.
 10. History is an independently synchronized bounded circular log whose inputs and outputs are deep-copied.
 11. HTTP exposes one reusable handler across standalone, supplied-server, and route-registrar ownership modes with strict input and coherent responses.
-12. Query, history, validation, and HTTP are consumers of coherent Manager snapshots.
+12. Query and `FindAll` traverse independent snapshots, return canonical JSON Pointer paths, and use deterministic lexical object order.
+13. Public direct mutation, HTTP mutation, validation, persistence, history, and observers share the same transaction engine.
 
 ## Working constraints
 
@@ -34,4 +35,4 @@ Review and improve the core `goconfig` package. The current code under `examples
 - The root and `history` packages have characterization tests and pass core compilation.
 - `examples/` is intentionally excluded from core checks because it contains mixed packages and a placeholder import.
 - The installed `staticcheck` binary is incompatible with the environment's Go standard library. `.codex/check.sh` runs it only when `RUN_STATICCHECK=1` and a compatible binary is available.
-- Phases 3 through 6 were completed with 71 tests, 70.5% root-package statement coverage, 93.9% history coverage, and passing repeated, race, and vet checks.
+- Phases 3 through 7 were completed with 86 tests, 73.9% root-package statement coverage, 93.9% history coverage, and passing repeated, race, and vet checks.

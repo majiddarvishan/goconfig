@@ -647,6 +647,8 @@ func (server *HTTPServer) writeMutationError(writer http.ResponseWriter, err err
 		writeError(writer, http.StatusUnprocessableEntity, err.Error())
 	case errors.Is(err, ErrPathNotFound):
 		writeError(writer, http.StatusNotFound, err.Error())
+	case errors.Is(err, ErrMutationDenied):
+		writeError(writer, http.StatusForbidden, err.Error())
 	case errors.Is(err, ErrInvalidPath), errors.Is(err, ErrTypeMismatch), errors.Is(err, ErrIndexOutOfRange):
 		writeError(writer, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrPersistence):

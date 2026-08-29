@@ -1,102 +1,145 @@
 # goconfig
 
-config manager for Golang applications
+`goconfig` is a transactional, schema-validated JSON configuration manager for
+Go. It supports in-memory and file-backed sources, optimistic versions, custom
+and external validation, bounded history, JSON Pointer queries, and an optional
+HTTP boundary.
 
 ## Installation
 
-You can use _go get_:
-
 ```bash
-go get -u github.com/majiddarvishan/goconfig
+go get github.com/majiddarvishan/goconfig
 ```
 
-## Usage
-```go
-manager, _ := config.NewManager(source)
-```
+The module currently targets Go 1.18 or newer. A non-empty JSON Schema is
+required when constructing a Manager.
 
-### API
-
-```go
-// Enable/disable history tracking
-manager.EnableHistory(true)
-
-// Get all history
-history := manager.GetHistory()
-for _, event := range history {
-    fmt.Printf("%s: %s at %s (v%d)\n",
-        event.Operation, event.Path, event.Timestamp, event.Version)
-}
-
-// Get history for specific path
-pathHistory := manager.GetHistoryByPath("/users", 10)
-
-// Clear history
-manager.ClearHistory()
-
-// Export as JSON
-historyJSON, _ := manager.history.ExportJSON()
-```
-
-### Event Structure
-```go
-type ChangeEvent struct {
-    Timestamp time.Time   // When change occurred
-    Operation string      // "insert", "remove", "replace"
-    Path      string      // Path that changed
-    Index     *int        // Array index (for insert/remove)
-    OldValue  interface{} // Previous value
-    NewValue  interface{} // New value
-    User      string      // Optional user identifier
-    Version   int64       // Version after change
-}
-```
-
-## Complete Example
+## Create a Manager
 
 ```go
 package main
 
 import (
-    "context"
     "fmt"
-    "time"
-    "your-module/config"
+
+    "github.com/majiddarvishan/goconfig"
 )
 
 func main() {
-    // Initialize
-    source, _ := config.NewStrSource(configJSON, schemaJSON)
-    manager, _ := config.NewManager(source)
-
-    // Setup features
-    manager.EnableHistory(true)
-    manager.AddValidator("/settings/port", config.ValidateRange(1, 65535))
-
-    validationSvc := config.NewValidationService("http://validator:8080", 5*time.Second)
-    manager.SetValidationService(validationSvc)
-
-    autoBackup := manager.StartAutoBackup(10*time.Minute, 10)
-    defer autoBackup.Stop()
-
-    // Query data
-    activeUsers, _ := manager.Query("/users/[?active==true]")
-    fmt.Printf("Active users: %d\n", len(activeUsers))
-
-    // View history
-    history := manager.GetHistory()
-    for _, event := range history {
-        fmt.Printf("%s: %s\n", event.Operation, event.Path)
+    source, err := goconfig.NewStrSource(
+        `{"name":"demo","port":8080}`,
+        `{
+          "type":"object",
+          "required":["name","port"],
+          "properties":{
+            "name":{"type":"string"},
+            "port":{"type":"integer"}
+          }
+        }`,
+    )
+    if err != nil {
+        panic(err)
     }
 
-    // Backup/restore
-    snapshot, _ := manager.CreateSnapshot()
-    // ... later ...
-    manager.Restore(snapshot)
+    manager, err := goconfig.NewManager(source)
+    if err != nil {
+        panic(err)
+    }
+
+    name, err := manager.Lookup("/name")
+    if err != nil {
+        panic(err)
+    }
+    if err := manager.OnReplace(name.Node, nil); err != nil {
+        panic(err)
+    }
+    if err := manager.Replace("/name", "production"); err != nil {
+        panic(err)
+    }
+
+    value, _ := manager.Config().GetString("name")
+    fmt.Println(value)
 }
 ```
 
+External source implementations should implement `Source` and use
+`NewManagerFromSource`. `ISource` and `NewManager(ISource)` remain for v1
+compatibility.
 
-## Thanks
+## Mutations
 
-I am sincerely grateful to `Mohammad Nejati` for his main idea implementation in `C++`
+Mutation paths are RFC 6901 JSON Pointers. Paths must first be registered with
+`OnInsert`, `OnRemove`, or `OnReplace`. The optional callback is a pre-commit
+veto hook.
+
+Use `Insert`, `Remove`, and `Replace` for simple calls, or `Mutate` when a
+context and expected version are required:
+
+```go
+expected := manager.Version()
+err := manager.Mutate(ctx, goconfig.Mutation{
+    Operation:       goconfig.OperationReplace,
+    Path:            "/port",
+    Value:           9090,
+    ExpectedVersion: &expected,
+})
+```
+
+Every mutation uses the same schema, custom, external-validation, persistence,
+version, history, and observer pipeline.
+
+## Validation
+
+```go
+if err := manager.RegisterValidator("/port", goconfig.ValidateRange(1, 65535)); err != nil {
+    return err
+}
+
+service := goconfig.NewValidationService("https://validator.example", 5*time.Second)
+manager.SetValidationService(service)
+```
+
+Configured external validation fails closed and receives the complete candidate
+configuration using the mutation context.
+
+## Query
+
+`Lookup` resolves an exact JSON Pointer. `Query` adds wildcard, legacy bracket
+index, and filter extensions:
+
+```go
+one, err := manager.Lookup("/items/0/name")
+many, err := manager.Query("/items/[*]/name")
+filtered, err := manager.Query("/items/[?enabled==true]/name")
+```
+
+Returned paths are canonical escaped JSON Pointers, object traversal is lexical,
+and returned nodes are independent snapshots.
+
+## History and snapshots
+
+```go
+events := manager.History()
+recentForPath := manager.HistoryByPath("/port", 10)
+snapshot, err := manager.Snapshot()
+```
+
+History capacity is configurable with `WithHistoryCapacity` at construction.
+History inputs and outputs are deep-copied.
+
+## HTTP
+
+```go
+server, err := goconfig.NewHTTPServer(manager, goconfig.WithAPIKey("secret"))
+handler := server.Handler()
+```
+
+The handler exposes `GET/POST /config` and optional `GET /health`. Standalone,
+supplied `http.Server`, route-registrar, authentication, CORS, timeout, body-size,
+and health configuration are documented in [HTTP_SERVER.md](HTTP_SERVER.md).
+
+## Examples
+
+The existing `examples/` tree is legacy and is not currently a supported source
+of behavior. It will be replaced with buildable examples in the planned project
+organization phase.

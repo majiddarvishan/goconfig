@@ -1,36 +1,15 @@
 package goconfig
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"sync"
-	"time"
 
 	"github.com/iancoleman/orderedmap"
 	"github.com/majiddarvishan/goconfig/history"
 	"github.com/xeipuuv/gojsonschema"
 )
-
-// ChangeHandler is a legacy-compatible pre-commit hook. Returning an error
-// rejects the private candidate before persistence.
-type ChangeHandler func(*Node) error
-
-type modifiableType int
-
-const (
-	Insertable modifiableType = iota
-	Removable
-	Replaceable
-)
-
-type modifiable struct {
-	Type    modifiableType
-	Path    string
-	Handler ChangeHandler
-}
 
 type Manager struct {
 	mu     sync.RWMutex
@@ -59,6 +38,13 @@ type Manager struct {
 
 	// Post-commit notifications
 	observers []ChangeObserver
+}
+
+// Snapshot is an independently owned serialized Manager state.
+type Snapshot struct {
+	Config  []byte
+	Schema  []byte
+	Version int64
 }
 
 func NewManager(source ISource) (*Manager, error) {
@@ -137,357 +123,31 @@ func (m *Manager) Config() *Node {
 	return m.config.DeepCopy()
 }
 
+// Source returns the legacy persistence implementation.
+// Deprecated: use Snapshot for public state reads.
 func (m *Manager) Source() ISource {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.source
 }
 
+// Snapshot returns configuration, schema, and version from one Manager lock.
+func (m *Manager) Snapshot() (Snapshot, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	config, err := json.Marshal(m.configObject)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("failed to marshal config snapshot: %w", err)
+	}
+	return Snapshot{
+		Config:  append([]byte(nil), config...),
+		Schema:  []byte(m.schemaJSON),
+		Version: m.version,
+	}, nil
+}
+
 func (m *Manager) Version() int64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.version
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// HISTORY
-////////////////////////////////////////////////////////////////////////////////
-
-func (m *Manager) EnableHistory(enabled bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.historyEnabled = enabled
-}
-
-func (m *Manager) GetHistory() []history.ChangeEvent {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.history.GetAll()
-}
-
-func (m *Manager) GetHistoryByPath(path string, limit int) []history.ChangeEvent {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.history.GetByPath(path, limit)
-}
-
-func (m *Manager) ClearHistory() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.history.Clear()
-}
-
-func (m *Manager) addHistoryEvent(event history.ChangeEvent) {
-	if m.historyEnabled && m.history != nil {
-		m.history.Add(event)
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// VALIDATION
-////////////////////////////////////////////////////////////////////////////////
-
-func (m *Manager) SetValidationService(service *ValidationService) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.validationService = service
-}
-
-func (m *Manager) AddValidator(path string, validator Validator) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.customValidator.AddValidator(path, validator)
-}
-
-func (m *Manager) GetCustomValidator() *CustomValidator {
-	return m.customValidator
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// HTTP Server
-////////////////////////////////////////////////////////////////////////////////
-
-// NewHttpServerFromNode configures HTTP from a Node.
-// Deprecated: use NewHTTPServer with options.
-func (m *Manager) NewHttpServerFromNode(conf *Node) error {
-	server, err := newHttpServerFromNode(m, conf)
-	if err != nil {
-		return err
-	}
-	m.httpMu.Lock()
-	m.httpServer = server
-	m.httpMu.Unlock()
-	return nil
-}
-
-// NewHttpServer configures the Manager-owned HTTP boundary.
-// Deprecated: use NewHTTPServer when direct lifecycle control is preferred.
-func (m *Manager) NewHttpServer(opts ...HttpServerOption) error {
-	server, err := newHttpServer(m, opts...)
-	if err != nil {
-		return err
-	}
-	m.httpMu.Lock()
-	m.httpServer = server
-	m.httpMu.Unlock()
-	return nil
-}
-
-// Handler returns the configured reusable HTTP handler. If HTTP has not been
-// configured, it installs a server with safe defaults.
-func (m *Manager) Handler() http.Handler {
-	m.httpMu.Lock()
-	defer m.httpMu.Unlock()
-	if m.httpServer == nil {
-		m.httpServer, _ = newHttpServer(m)
-	}
-	return m.httpServer.Handler()
-}
-
-// StartHTTPServer starts the configured server and returns listener errors.
-func (m *Manager) StartHTTPServer() error {
-	server, err := m.configuredHTTPServer()
-	if err != nil {
-		return err
-	}
-	return server.Start()
-}
-
-// StartHttpServer retains the original asynchronous behavior without panic.
-// Deprecated: use StartHTTPServer and handle the returned error.
-func (m *Manager) StartHttpServer() {
-	go func() {
-		_ = m.StartHTTPServer()
-	}()
-}
-
-// ShutdownHTTPServer gracefully stops the configured HTTP server.
-func (m *Manager) ShutdownHTTPServer(ctx context.Context) error {
-	server, err := m.configuredHTTPServer()
-	if err != nil {
-		return err
-	}
-	return server.Shutdown(ctx)
-}
-
-// StopHttpServer retains the original best-effort shutdown behavior.
-// Deprecated: use ShutdownHTTPServer and handle the returned error.
-func (m *Manager) StopHttpServer() {
-	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	_ = m.ShutdownHTTPServer(ctx)
-}
-
-// RegisterHTTPRoutes attaches the configured handler to a route registrar.
-func (m *Manager) RegisterHTTPRoutes(registrar RouteRegistrar) error {
-	server, err := m.configuredHTTPServer()
-	if err != nil {
-		return err
-	}
-	return server.RegisterRoutes(registrar)
-}
-
-// SetupRoutes retains the original no-error adapter.
-// Deprecated: use RegisterHTTPRoutes.
-func (m *Manager) SetupRoutes(r RouteRegistrar) {
-	_ = m.RegisterHTTPRoutes(r)
-}
-
-func (m *Manager) configuredHTTPServer() (*HTTPServer, error) {
-	m.httpMu.RLock()
-	defer m.httpMu.RUnlock()
-	if m.httpServer == nil {
-		return nil, ErrHTTPServerNotConfigured
-	}
-	return m.httpServer, nil
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// INSERT
-////////////////////////////////////////////////////////////////////////////////
-
-func (m *Manager) insert(path string, index int, value interface{}) error {
-	return m.mutate(context.Background(), mutationRequest{
-		kind:  mutationInsert,
-		path:  path,
-		index: index,
-		value: value,
-	})
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// REMOVE
-////////////////////////////////////////////////////////////////////////////////
-
-func (m *Manager) remove(path string, index int) error {
-	return m.mutate(context.Background(), mutationRequest{
-		kind:  mutationRemove,
-		path:  path,
-		index: index,
-	})
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// REPLACE
-////////////////////////////////////////////////////////////////////////////////
-
-func (m *Manager) replace(path string, value interface{}) error {
-	return m.mutate(context.Background(), mutationRequest{
-		kind:  mutationReplace,
-		path:  path,
-		value: value,
-	})
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// REGISTRATION
-////////////////////////////////////////////////////////////////////////////////
-
-func (m *Manager) OnInsert(node *Node, handler ChangeHandler) error {
-	if node == nil {
-		return errors.New("node cannot be nil")
-	}
-	if node.Type() != Array {
-		return errors.New("node must be array for insert operations")
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	p, err := m.findAndSanitizeNodePathLocked(node)
-	if err != nil {
-		return err
-	}
-	current, err := nodeAtJSONPointer(m.config, p)
-	if err != nil {
-		return fmt.Errorf("registered node is no longer present: %w", err)
-	}
-	if current.Type() != Array {
-		return errors.New("node must be array for insert operations")
-	}
-
-	m.modifiables = append(m.modifiables, modifiable{
-		Type:    Insertable,
-		Path:    p,
-		Handler: handler,
-	})
-
-	return nil
-}
-
-func (m *Manager) OnRemove(node *Node, handler ChangeHandler) error {
-	if node == nil {
-		return errors.New("node cannot be nil")
-	}
-	if node.Type() != Array {
-		return errors.New("node must be array for remove operations")
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	p, err := m.findAndSanitizeNodePathLocked(node)
-	if err != nil {
-		return err
-	}
-	current, err := nodeAtJSONPointer(m.config, p)
-	if err != nil {
-		return fmt.Errorf("registered node is no longer present: %w", err)
-	}
-	if current.Type() != Array {
-		return errors.New("node must be array for remove operations")
-	}
-
-	m.modifiables = append(m.modifiables, modifiable{
-		Type:    Removable,
-		Path:    p,
-		Handler: handler,
-	})
-
-	return nil
-}
-
-func (m *Manager) OnReplace(node *Node, handler ChangeHandler) error {
-	if node == nil {
-		return errors.New("node cannot be nil")
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	p, err := m.findAndSanitizeNodePathLocked(node)
-	if err != nil {
-		return err
-	}
-	if _, err := nodeAtJSONPointer(m.config, p); err != nil {
-		return fmt.Errorf("registered node is no longer present: %w", err)
-	}
-
-	m.modifiables = append(m.modifiables, modifiable{
-		Type:    Replaceable,
-		Path:    p,
-		Handler: handler,
-	})
-
-	return nil
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// PATH HELPERS
-////////////////////////////////////////////////////////////////////////////////
-
-func (m *Manager) findModifiableLocked(t modifiableType, path string) (*modifiable, error) {
-	for i := range m.modifiables {
-		if m.modifiables[i].Type == t && m.modifiables[i].Path == path {
-			return &m.modifiables[i], nil
-		}
-	}
-	return nil, fmt.Errorf("path '%s' not modifiable for operation type %d", path, t)
-}
-
-func (m *Manager) updateModifiablesLocked() {
-	validMods := make([]modifiable, 0, len(m.modifiables))
-	for _, mod := range m.modifiables {
-		node, err := nodeAtJSONPointer(m.config, mod.Path)
-		if err != nil {
-			continue
-		}
-		if (mod.Type == Insertable || mod.Type == Removable) && node.Type() != Array {
-			continue
-		}
-		validMods = append(validMods, mod)
-	}
-	m.modifiables = validMods
-}
-
-func (m *Manager) findNodePathLocked(n *Node) string {
-	if n != nil && n.owner == m {
-		if _, err := nodeAtJSONPointer(m.config, n.path); err == nil {
-			return n.path
-		}
-	}
-	return findNodePath(m.config, n)
-}
-
-func (m *Manager) findAndSanitizeNodePathLocked(n *Node) (string, error) {
-	if n != nil && n.owner == m {
-		if _, err := nodeAtJSONPointer(m.config, n.path); err != nil {
-			return "", errors.New("node has no valid path in config tree")
-		}
-		return n.path, nil
-	}
-	p := m.findNodePathLocked(n)
-	if p == "" && n != m.config {
-		return "", errors.New("node has no valid path in config tree")
-	}
-	return p, nil
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// HELPERS
-////////////////////////////////////////////////////////////////////////////////
-
-// Helper for testing/mocking time
-var timeNow = func() time.Time {
-	return time.Now()
 }

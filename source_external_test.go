@@ -67,6 +67,30 @@ func TestExternalPackageCanUseHTTPHandler(t *testing.T) {
 	}
 }
 
+func TestExternalPackageCanMutateConfiguration(t *testing.T) {
+	source := &externalSource{
+		config: []byte(`{"name":"external"}`),
+		schema: []byte(`{"type":"object","properties":{"name":{"type":"string"}}}`),
+	}
+	manager, err := goconfig.NewManagerFromSource(source)
+	if err != nil {
+		t.Fatalf("NewManagerFromSource() error = %v", err)
+	}
+	name, err := manager.Lookup("/name")
+	if err != nil {
+		t.Fatalf("Lookup() error = %v", err)
+	}
+	if err := manager.OnReplace(name.Node, nil); err != nil {
+		t.Fatalf("OnReplace() error = %v", err)
+	}
+	if err := manager.Replace("/name", "updated"); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+	if got, _ := manager.Config().GetString("name"); got != "updated" {
+		t.Fatalf("name = %q, want updated", got)
+	}
+}
+
 type externalSource struct {
 	config []byte
 	schema []byte

@@ -2,7 +2,7 @@
 
 This document records the decisions made in Phase 2. It defines the target behavior for the refactoring phases while preserving the supported v1 surface where practical.
 
-The transaction, path, snapshot, numeric, schema-compilation, observer, public Source, validation, persistence, history, and HTTP portions of this contract are implemented as of Phase 6.
+The transaction, path, snapshot, numeric, schema-compilation, observer, public Source, validation, persistence, history, HTTP, query, and public-mutation portions of this contract are implemented as of Phase 7.
 
 ## Compatibility policy
 
@@ -19,18 +19,18 @@ The transaction, path, snapshot, numeric, schema-compilation, observer, public S
 - `/` identifies an object member whose key is the empty string; it is not the canonical root path.
 - `~1` represents `/` inside a segment and `~0` represents `~`.
 - Empty segments are preserved.
-- Array indexes are canonical base-10 non-negative integers. `0` is valid; leading zeroes on multi-digit indexes are rejected by the future resolver.
+- Array indexes are canonical base-10 non-negative integers. `0` is valid; leading zeroes on multi-digit indexes are rejected by the resolver.
 - Mutation paths address existing containers or values according to the selected operation; the Phase 3 resolver will define operation-specific bounds.
-- The existing `Query("/")` root behavior remains a v1 compatibility rule until query adopts a distinct canonical API.
+- The existing `Query("/")` root behavior remains a v1 compatibility rule; `Lookup` is the distinct exact-pointer API, including for the empty-key pointer `/`.
 
-Executable parsing and escaping cases are covered by `path_test.go`. Phase 3 will route mutation traversal through these primitives.
+Executable parsing and escaping cases are covered by `path_test.go`; mutation and query traversal use these primitives.
 
 ## Schema contract
 
 - A Manager requires a non-empty, syntactically valid JSON Schema in v1.
 - The initial configuration must satisfy the schema before Manager construction succeeds.
 - Every candidate mutation must satisfy the same compiled schema before persistence.
-- Schema compilation should happen once during Manager construction in a later phase.
+- Schema compilation happens once during Manager construction.
 - Optional schema validation, if needed, will be introduced through an explicit option rather than treating an empty schema ambiguously.
 
 ## Mutation and callback ordering
@@ -90,6 +90,23 @@ User callbacks must not execute while a Manager lock is held. If the committed v
 - API-key authentication retains only SHA-256 state and uses constant-time comparison.
 - Error responses distinguish malformed input, authentication, missing paths, version conflicts, body limits, media types, validation, and internal persistence failures.
 - Successful responses use a single Manager snapshot for configuration, schema, modifiable paths, and version.
+
+## Query
+
+- `Lookup` resolves exact RFC 6901 JSON Pointers and never interprets wildcard/filter tokens.
+- `Query` uses decoded JSON Pointer segments plus compatible `*`, `[*]`, `[index]`, and `[?condition]` extensions.
+- The legacy `Query("/")` call selects the root, but all returned root paths use the canonical empty pointer.
+- Plain canonical array indexes are supported; bracket indexes remain compatible.
+- Object wildcard and `FindAll` traversal is lexical by decoded key. Array traversal preserves index order.
+- A wildcard/filter branch traversal error aborts with the first deterministic error; it is never silently discarded.
+- `FindAll` invokes predicates over an independent snapshot without a Manager lock.
+
+## Public mutation
+
+- `Mutation`/`Mutate` expose the same context-aware transaction pipeline used by HTTP.
+- `Insert`, `Remove`, and `Replace` are background-context convenience methods.
+- Paths must be registered by `OnInsert`, `OnRemove`, or `OnReplace`; unregistered operations return `ErrMutationDenied`.
+- Expected versions are copied at the API boundary and checked atomically during commit.
 
 ## Ordering
 

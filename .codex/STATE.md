@@ -18,6 +18,7 @@
 - [x] Phase 4 Node and Source encapsulation completed.
 - [x] Phase 5 validation, persistence, and history hardening completed.
 - [x] Phase 6 HTTP boundary redesign completed.
+- [x] Phase 7 query, structure, and cleanup completed.
 - [x] Phase 9 repository-organization and executable-examples phase added to the roadmap.
 
 ## Phase 2 decisions
@@ -32,13 +33,13 @@ Full contracts are in `CONTRACTS.md`.
 
 ## Implementation order
 
-Phases 1 through 6 are complete. The next implementation work is Phase 7: query, structure, and cleanup. Phase 9 will later reorganize the repository and rebuild `examples/` as supported, executable programs.
+Phases 1 through 7 are complete. The next implementation work is Phase 8: verification and hardening. Phase 9 will then reorganize the repository and rebuild `examples/` as supported, executable programs.
 
 ## Phase 1 verification
 
 - Core test packages: `.` and `./history`
-- Characterization and contract tests: 71
-- Statement coverage after Phase 6: 70.5% for the root package and 93.9% for `history`
+- Characterization and contract tests: 86
+- Statement coverage after Phase 7: 73.9% for the root package and 93.9% for `history`
 - `go test`, `go test -race`, and `go vet`: passing
 - Formatting check: passing
 - `go test ./...`: intentionally not an acceptance command because the excluded `examples/` directory contains mixed packages and a placeholder import
@@ -83,3 +84,16 @@ Phases 1 through 6 are complete. The next implementation work is Phase 7: query,
 - Configurable CORS, logging, authentication, timeouts, body size, and health policy
 - Digest-only API-key retention and constant-time comparison
 - Deterministic HTTP expected-version concurrency coverage
+
+## Phase 7 implementation summary
+
+- Canonical escaped JSON Pointer query paths and plain array indexes
+- Exact `Lookup` API for keys that overlap query-extension syntax
+- Lexically ordered wildcard/object traversal with explicit branch errors
+- Snapshot-based `FindAll` predicates with no Manager lock held
+- Exact rational numeric filter comparison and stricter filter parsing
+- Focused Manager history, validation, HTTP, mutation, and core files
+- Public transactional mutation API with expected-version/context support
+- Typed invalid/denied mutation and query errors
+- Idiomatic history, validation, HTTP, and snapshot APIs with compatibility adapters
+- Root README synchronized with implemented public behavior

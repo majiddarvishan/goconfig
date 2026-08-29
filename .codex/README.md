@@ -9,4 +9,4 @@ This directory contains the internal review and implementation plan for improvin
 - `STATE.md`: progress tracker and unresolved decisions.
 - `check.sh`: repeatable core formatting, test, race, and vet checks; run it with `bash .codex/check.sh`.
 
-The `examples/` directory is intentionally excluded from review and implementation decisions.
+The current `examples/` directory remains excluded from behavioral decisions. Phase 9 is authorized to replace it with examples derived from the finalized API.

@@ -15,14 +15,18 @@ func TestValidateAgainstJSONSchema(t *testing.T) {
 	invalid := `{"name":"incomplete"}`
 	schema := testSchemaJSON
 
-	if err := validate(&valid, &schema); err != nil {
+	compiled, err := compileSchema(&schema)
+	if err != nil {
+		t.Fatalf("compileSchema() error = %v", err)
+	}
+	if err := validateWithSchema(compiled, []byte(valid)); err != nil {
 		t.Fatalf("validate(valid) error = %v", err)
 	}
-	if err := validate(&invalid, &schema); err == nil {
+	if err := validateWithSchema(compiled, []byte(invalid)); err == nil {
 		t.Fatal("validate(invalid) error = nil, want error")
 	}
-	if err := validate(nil, &schema); err == nil {
-		t.Fatal("validate(nil config) error = nil, want error")
+	if _, err := compileSchema(nil); err == nil {
+		t.Fatal("compileSchema(nil) error = nil, want error")
 	}
 }
 

@@ -8,21 +8,6 @@ import (
 	"github.com/xeipuuv/gojsonschema"
 )
 
-func validate(conf, schema *string) error {
-	if conf == nil {
-		return errors.New("config cannot be nil")
-	}
-	if schema == nil {
-		return errors.New("schema cannot be nil")
-	}
-
-	compiled, err := compileSchema(schema)
-	if err != nil {
-		return err
-	}
-	return validateWithSchema(compiled, []byte(*conf))
-}
-
 func compileSchema(schema *string) (*gojsonschema.Schema, error) {
 	if schema == nil {
 		return nil, errors.New("schema cannot be nil")

@@ -177,3 +177,22 @@ func TestManagerRequiresValidSchemaAndInitialConfiguration(t *testing.T) {
 		})
 	}
 }
+
+func TestManagerSnapshotIsCoherentAndIndependent(t *testing.T) {
+	manager, _ := newTestManager(t)
+	snapshot, err := manager.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if snapshot.Version != 1 || len(snapshot.Config) == 0 || len(snapshot.Schema) == 0 {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	snapshot.Config[0] = '['
+	again, err := manager.Snapshot()
+	if err != nil {
+		t.Fatalf("second Snapshot() error = %v", err)
+	}
+	if again.Config[0] != '{' {
+		t.Fatal("mutating returned snapshot changed Manager state")
+	}
+}

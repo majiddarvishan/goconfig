@@ -194,6 +194,13 @@ func TestHTTPMapsMutationErrors(t *testing.T) {
 		t.Fatalf("missing path status = %d, body = %s", response.Code, response.Body.String())
 	}
 
+	deniedManager, _ := newTestManager(t)
+	deniedServer, _ := newHttpServer(deniedManager)
+	response = performHTTPMutation(deniedServer.Handler(), `{"op":"replace","path":"/name","value":"new"}`)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("unregistered path status = %d, body = %s", response.Code, response.Body.String())
+	}
+
 	failingSource := newFailingLegacySource(t)
 	failingManager, err := NewManager(failingSource)
 	if err != nil {

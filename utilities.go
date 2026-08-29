@@ -1,8 +1,6 @@
 package goconfig
 
-import (
-	"strconv"
-)
+import "strconv"
 
 func findNodePath(parentNode *Node, desiredNode *Node) string {
 	if parentNode == desiredNode {
