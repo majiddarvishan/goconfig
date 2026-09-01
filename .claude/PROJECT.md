@@ -8,7 +8,15 @@ library. It loads a JSON config document + JSON-Schema through a pluggable `ISou
 as a mutable `Node` tree, re-validates on every mutation, tracks an audit history, and can
 optionally be administered over HTTP via the separate `httpserver` sub-package.
 
-There is no `main.go`/`cmd/` — this repo is a library only. `VERSION` currently says `1.4.2`.
+There is no `main.go`/`cmd/` — this repo is a library only.
+
+**Versioning:** git tags are the sole source of truth (e.g. `v1.4.2`, `v1.5.0`) — this is what Go
+tooling (`go get module@vX.Y.Z`, `go.sum`, pkg.go.dev) actually resolves against. There is no
+`VERSION` file (removed — it duplicated the tag and could drift out of sync) and no in-code
+`Version` const. To pick the next tag: patch for fixes, minor for backward-compatible additions
+(new exported API, no removals/behavior breaks), major for breaking changes. `git describe --tags`
+shows how far HEAD is past the last release. Latest tag as of this writing: `v1.4.2`; `v1.5.0` is
+the next one, covering the Manager/httpserver package split + `NewServer`/`AddRoute` additions.
 
 **Architecture note:** `Manager` and the HTTP admin API were deliberately split into two packages
 (root `goconfig` and `httpserver`) so `Manager` can be used with zero HTTP dependency, and so the
