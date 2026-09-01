@@ -1,4 +1,4 @@
-package goconfig
+package httpserver
 
 import "net/http"
 

@@ -1,7 +1,6 @@
 package goconfig
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,9 +48,6 @@ type Manager struct {
 
 	// External validation
 	validationService *validationService
-
-	// Http Server
-	httpServer *HttpServer
 }
 
 func NewManager(source ISource) (*Manager, error) {
@@ -199,55 +195,35 @@ func (m *Manager) GetCustomValidator() *customValidator {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// HTTP Server
+// SOURCE ACCESS
 ////////////////////////////////////////////////////////////////////////////////
 
-func (m *Manager) NewHttpServerFromNode(conf *Node) error {
-	var err error
-	m.httpServer, err = newHttpServerFromNode(m, conf)
-	if err != nil {
-		return err
+// ConfigJSON returns the raw JSON text of the currently persisted configuration.
+func (m *Manager) ConfigJSON() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if s := m.source.getConfig(); s != nil {
+		return *s
 	}
-
-	return nil
+	return ""
 }
 
-func (m *Manager) NewHttpServer(opts ...HttpServerOption) error {
-	var err error
-	m.httpServer, err = newHttpServer(m, opts...)
-	if err != nil {
-		return err
+// SchemaJSON returns the raw JSON schema text.
+func (m *Manager) SchemaJSON() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if s := m.source.getSchema(); s != nil {
+		return *s
 	}
-
-	return nil
-}
-
-func (m *Manager) StartHttpServer() {
-	go func() {
-		if err := m.httpServer.Start(); err != nil {
-			panic(err)
-		}
-	}()
-}
-
-func (m *Manager) StopHttpServer() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	if err := m.httpServer.Shutdown(ctx); err != nil {
-		fmt.Printf("Shutdown error: %v", err)
-	}
-}
-
-func (m *Manager) SetupRoutes(r RouteRegistrar) {
-	m.httpServer.registerRoutes(r)
+	return ""
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // INSERT (improved with all features)
 ////////////////////////////////////////////////////////////////////////////////
 
-func (m *Manager) insert(path string, index int, value interface{}) error {
+// Insert adds value at index into the array registered via OnInsert for path.
+func (m *Manager) Insert(path string, index int, value interface{}) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.insertLocked(path, index, value)
@@ -341,7 +317,8 @@ func (m *Manager) insertLocked(path string, index int, value interface{}) error 
 // REMOVE (improved with all features)
 ////////////////////////////////////////////////////////////////////////////////
 
-func (m *Manager) remove(path string, index int) error {
+// Remove deletes the element at index from the array registered via OnRemove for path.
+func (m *Manager) Remove(path string, index int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.removeLocked(path, index)
@@ -427,7 +404,8 @@ func (m *Manager) removeLocked(path string, index int) error {
 // REPLACE (improved with all features)
 ////////////////////////////////////////////////////////////////////////////////
 
-func (m *Manager) replace(path string, value interface{}) error {
+// Replace sets the value at path registered via OnReplace.
+func (m *Manager) Replace(path string, value interface{}) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.replaceLocked(path, value)
@@ -585,9 +563,14 @@ func (m *Manager) OnReplace(node *Node, handler handler_t) error {
 // PATH HELPERS
 ////////////////////////////////////////////////////////////////////////////////
 
-func (m *Manager) getInsertablePaths() []string  { return m.getPathsLocked(Insertable) }
-func (m *Manager) getRemovablePaths() []string   { return m.getPathsLocked(Removable) }
-func (m *Manager) getReplaceablePaths() []string { return m.getPathsLocked(Replaceable) }
+// InsertablePaths returns the paths currently registered as insertable via OnInsert.
+func (m *Manager) InsertablePaths() []string { return m.getPathsLocked(Insertable) }
+
+// RemovablePaths returns the paths currently registered as removable via OnRemove.
+func (m *Manager) RemovablePaths() []string { return m.getPathsLocked(Removable) }
+
+// ReplaceablePaths returns the paths currently registered as replaceable via OnReplace.
+func (m *Manager) ReplaceablePaths() []string { return m.getPathsLocked(Replaceable) }
 
 func (m *Manager) getPathsLocked(t modifiableType) []string {
 	m.mu.RLock()

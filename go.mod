@@ -2,7 +2,11 @@ module github.com/majiddarvishan/goconfig
 
 go 1.18
 
-require github.com/xeipuuv/gojsonschema v1.2.0
+require (
+	github.com/iancoleman/orderedmap v0.3.0
+	github.com/rs/cors v1.11.1
+	github.com/xeipuuv/gojsonschema v1.2.0
+)
 
 require (
 	github.com/xeipuuv/gojsonpointer v0.0.0-20180127040702-4e3ac2762d5f // indirect
