@@ -61,9 +61,10 @@ integration modes" below):
 - `route_registrar.go` — `RouteRegistrar` interface (decouples the HTTP layer from a specific
   router/framework).
 
-`examples/` — four runnable programs (previous `example_usage.go` / `http_server_examples.go`
-were broken and removed):
+`examples/` — five runnable programs (previous `example_usage.go` / `http_server_examples.go`
+were broken and removed), all linked from README.md:
 - `examples/basic/` — `Manager` only, zero HTTP.
+- `examples/history/` — `EnableHistory`/`GetHistory`/`GetHistoryByPath`/`ClearHistory` in detail.
 - `examples/httpserver-embedded/` — the app's own web-service (`newAppWebService()`, no goconfig
   import at all) with goconfig's routes optionally wired in later via `RegisterRoutes`; this is the
   intended real-world shape, not a second server goconfig owns on its own port.
@@ -225,38 +226,39 @@ constructors on the same `HttpServer` type — kept side by side deliberately (u
 for the simpler model in addition to, not instead of, the original one). `AddRoute`/`AddRoutes`
 only work on a `NewServer`-built instance; `RegisterRoutes` only works on a manager-bound one.
 
-## Known issues / doc drift (important — read before trusting README.md / HTTP_SERVER.md)
+## Known issues
 
-1. **Build was broken, now fixed.** `go.mod` originally only required `xeipuuv/gojsonschema`
-   while the code imported `github.com/iancoleman/orderedmap` and `github.com/rs/cors` without
-   declaring them. Fixed via `go mod tidy`; both are now proper `go.mod` requires.
-2. **`examples/` was rewritten from scratch** (see `.claude/plan.md` for the history) — it
-   previously had two files with conflicting `package main`/`package examples` clauses and
-   referenced APIs that never existed (`Batch`/`Transaction`, `CreateSnapshot`/`Restore`/
-   `StartAutoBackup`, `ConditionalReplace`/`CompareAndSwap`, a package-level
-   `config.NewHttpServer(...)` with `GetHandler`/`GetServer`/`StartTLS`). It's now three runnable
-   programs matching the real API — see "Package / file map" above.
-3. **`README.md` and `HTTP_SERVER.md` are stale** — written for an API that doesn't match the
-   source (predates the `httpserver` package split too). Notably README's example calls
-   `manager.history.ExportJSON()` (unexported field, won't compile — use `manager.GetHistory()`
-   + marshal manually), and HTTP_SERVER.md documents constructors/methods that don't exist.
-   These docs have not been rewritten yet; trust `.go` source and this file over them.
-4. **`ISource` has unexported methods**, so only types inside package `goconfig` can implement it.
+1. **`ISource` has unexported methods**, so only types inside package `goconfig` can implement it.
    External code cannot supply a custom source (e.g. etcd/Consul-backed) — only `FileSource` and
    `StrSource` ship today.
-5. **Likely constructor bug**: the external validation service constructor is
-   `NewvalidationService` (lowercase `v`), while README calls it `NewValidationService`. As
-   written, `SetValidationService`/`AddValidator` take unexported param types
-   (`*validationService`, `validatorFunc`) that external callers can't construct meaningfully.
-6. **Zero automated tests.** No `*_test.go` files anywhere in the module.
-7. `ValidatePattern`'s "pattern" matching is literal `*`/exact-match only, not real regex/glob —
+2. **Likely constructor bug**: the external validation service constructor is
+   `NewvalidationService` (lowercase `v`). As written, `SetValidationService`/`AddValidator` take
+   unexported param types (`*validationService`, `validatorFunc`) that external callers can't
+   construct meaningfully.
+3. **Zero automated tests.** No `*_test.go` files anywhere in the module.
+4. `ValidatePattern`'s "pattern" matching is literal `*`/exact-match only, not real regex/glob —
    don't assume regex semantics despite the name.
+5. **`history.ChangeEvent.OldValue`/`NewValue` leak internal representation for object nodes.**
+   `insertLocked`/`removeLocked`/`replaceLocked` (manager.go) store the raw `*Node`'s `.value` for
+   object-typed old/new values, which for an object is `map[string]*Node` — printing it (`%v`)
+   shows internal pointer addresses (e.g. `map[age:0xc0001... name:0xc0002...]`) instead of the
+   actual data. Scalars (numbers/strings/bools) are unaffected. Found while writing
+   `examples/history`; worked around there by not printing `OldValue`/`NewValue`. Would need
+   `OldValue`/`NewValue` to store a plain `interface{}` (e.g. via `json.Marshal`/`Node` walk)
+   instead of the tree-internal representation to fix properly.
+
+Resolved in earlier work (kept only as history, not action items): the module used to fail to
+build (`go.mod` missing `iancoleman/orderedmap`/`rs/cors` requires — fixed via `go mod tidy`);
+`examples/` used to be two non-compiling files with fabricated APIs (rewritten from scratch, see
+`.claude/plan.md`); `README.md`/`HTTP_SERVER.md` used to document an API that never existed
+(`README.md` rewritten to link to `examples/` instead of embedding code, `HTTP_SERVER.md` deleted
+entirely as fully superseded by the `httpserver-*` examples).
 
 ## Practical guidance for future work here
 
-- Trust the actual `.go` source over `README.md`/`HTTP_SERVER.md` when they conflict — those two
-  files have not been updated for the `httpserver` package split and are stale.
-- `go build ./...` / `go vet ./...` cover the whole module cleanly, including all four
+- `README.md` intentionally contains no Go code — it links to `examples/*` instead, so it can't
+  drift out of sync with the real API the way the old `HTTP_SERVER.md` did (deleted).
+- `go build ./...` / `go vet ./...` cover the whole module cleanly, including all five
   `examples/*` programs (each is its own subdirectory/`package main`, since Go only allows one
   `main()` per package).
 - Concurrency: `Manager` is guarded by a single `sync.RWMutex`; mutation methods
