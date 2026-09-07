@@ -149,4 +149,89 @@ in it, referencing `examples/` instead, keep a "Thanks" section at the end with 
       issues" (dropped the now-resolved build/examples/docs-drift items, added the new
       OldValue/NewValue finding), updated "Practical guidance".
 - [x] `go build ./...` + `go vet ./...` clean; ran `go run ./examples/history` to confirm output.
-- [ ] Report summary to user; **do not commit** — ask first per user instruction
+- [x] Report summary to user; **do not commit** — ask first per user instruction
+
+## 10. Full codebase review — bugs, performance, cleanliness (NOT STARTED — plan only)
+
+User asked for a full review pass (not a diff review) of the whole module for bugs, performance
+issues, and cleanliness/structure, phased for later implementation. **User explicitly said not to
+start implementing yet** — this section is a TODO list to come back to when told to. Every finding
+was verified against current source, not assumed. Nothing below is done.
+
+### Phase 1 — Bug fixes
+
+- [ ] **B1** `utilities.go:37,110,200` (`jsonSetByPath`/`jsonRemoveByPath`/`jsonInsertByPath`):
+      `reflect.TypeOf(found).Kind()` panics when `found` is `nil` (a JSON `null` along the path).
+      Add a `found == nil` check before the reflect call, return a clean error instead.
+- [ ] **B2** `utilities.go:324` (`parseNode`): silently coerces unrecognized Go types (`int64`,
+      `int32`, `uint`, `uint64`, `float32`, ...) to `Null` (line 384 default case) instead of
+      erroring or converting. Extend the type switch to cover common numeric types. Note
+      `node.go`'s `Type()` already has a `case int64` (lines 34/160/180) that's currently dead code
+      because of this gap.
+- [ ] **B3** `manager.go:396` (remove) and `manager.go:462,475` (replace): `history.ChangeEvent`'s
+      `OldValue` stores the raw `*Node.value` for object/array values (`map[string]*Node`/
+      `[]*Node`, unexported internals) — prints as pointer addresses, and worse, silently
+      serializes to `{}` via `ChangeHistory.ExportJSON()` (`history/change_event.go:95`) since
+      `Node`'s `value` field is unexported and invisible to `encoding/json`. Add a
+      `nodeValueToPlain(*Node) interface{}` helper (recursively unwrap to
+      `map[string]interface{}`/`[]interface{}`/scalar) and use it wherever Old/NewValue comes from
+      a `*Node` rather than the caller's original raw value.
+- [ ] **B4** `manager.go:193` (`GetCustomValidator`) + `validation_service.go:112-142`
+      (`customValidator`): no internal synchronization, but reachable for external mutation
+      concurrently with Manager's own locked calls into it — real data-race potential (Go panics on
+      detected concurrent map access). Either remove the raw getter (route everything through the
+      already-locked `Manager.AddValidator`) or add a mutex inside `customValidator`.
+- [ ] **B5** `manager.go:82-88` (`Config()`): doc comment says it returns a deep copy "to prevent
+      data races" but the `DeepCopy()` call is commented out — it returns the live internal `*Node`
+      (required, since `OnInsert`/`OnRemove`/`OnReplace` need the real pointer for path-identity
+      lookups). Fix the comment to describe actual behavior; don't change the behavior.
+
+### Phase 2 — Concurrency (own phase, needs discussion before implementing)
+
+- [ ] **C1** `manager.go:283/285` (insert), `370/372` (remove), `450/452` (replace): `m.mu` is
+      unlocked around the `OnInsert`/`OnRemove`/`OnReplace` handler call, but the tree is already
+      mutated before that unlock — a concurrent read during the handler window can observe
+      not-yet-committed state, and a concurrent second mutation on the same array during that
+      window can have its change silently discarded if the first mutation's handler fails and
+      rolls back. At minimum, document this contract clearly; discuss with user whether a
+      behavioral fix (e.g. per-path serialization) is wanted, since it changes locking semantics.
+
+### Phase 3 — Performance
+
+- [ ] **P1** Every Insert/Remove/Replace does up to 3 full-document JSON marshals + 1 unmarshal:
+      `Clone()` (`utilities.go:392`), `validateJSONAgainstSchema` (`manager.go:627`), and
+      `source.setConfig`'s internal marshal (`file_source.go`/`string_source.go`). Consolidate
+      where reasonable (e.g. reuse the validation marshal's bytes for persistence).
+- [ ] **P2** `routes.go`'s `buildConfigState` calls `m.ConfigJSON()` (string) then
+      `json.Unmarshal`s it back into an `orderedmap.OrderedMap` on every `/config` request, even
+      though `ISource.getConfigObject()` already holds a live parsed one. Avoid the round-trip.
+- [ ] *(Noted, not scheduled)* path cache (`manager.go` `rebuildPathCache`) fully rebuilds on every
+      mutation rather than incrementally — only worth acting on if profiling shows it matters.
+
+### Phase 4 — Cleanliness & structure
+
+- [ ] **S1** `utilities.go`: `jsonSetByPath` (14), `jsonRemoveByPath` (87), `jsonInsertByPath`
+      (177) share ~90% duplicated "walk to parent map" code. Extract a shared
+      `navigateToParentMap(jsonMap, path) (parent *orderedmap.OrderedMap, lastKey string, err error)`.
+- [ ] **S2** Remove dead commented-out code in `manager.go` (lines 86, 281, 368, 448 — `// return
+      m.config.DeepCopy()` and three `// handlerNode := ...DeepCopy()` lines), or replace with a
+      one-line comment explaining why DeepCopy is intentionally skipped (ties into B5/C1).
+- [ ] **S3** Rename `NewvalidationService` → `NewValidationService` (`validation_service.go:36`,
+      casing typo, currently undiscoverable/unused so low-risk).
+- [ ] **S4** Add a baseline `go test` suite (currently zero `*_test.go` files anywhere) — prioritize
+      `utilities.go` path functions (as B1/B2 regression tests), `Manager` insert/remove/replace +
+      rollback + history (B3 regression), and the `query.go` DSL. Best done *after* Phase 1 so the
+      new tests can assert the fixed behavior.
+- [ ] *(Optional, not recommended to schedule)* S5: consider splitting `httpserver.HttpServer`'s
+      two modes (manager-bound vs generic) into separate types — user previously asked to keep both
+      on one type, so only revisit if that changes.
+- [ ] *(Optional, not recommended to schedule)* S6: no CI (`.github/workflows`) running
+      `go build`/`go vet`/`go test` — process/infra, not a code defect.
+
+### Verification (once a phase is actually started)
+
+- `go build ./...` + `go vet ./...` across the whole module.
+- Re-run all five `examples/*` programs to confirm no behavioral regressions.
+- Phase 1/4: add regression tests for each fixed bug (nil-path input, non-float64 numeric insert,
+  history export round-trip for object values).
+- Phase 3: a quick before/after timing comparison on a moderately sized config.
