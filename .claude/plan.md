@@ -158,33 +158,53 @@ issues, and cleanliness/structure, phased for later implementation. **User expli
 start implementing yet** — this section is a TODO list to come back to when told to. Every finding
 was verified against current source, not assumed. Nothing below is done.
 
-### Phase 1 — Bug fixes
+### Phase 1 — Bug fixes — ✅ DONE
 
-- [ ] **B1** `utilities.go:37,110,200` (`jsonSetByPath`/`jsonRemoveByPath`/`jsonInsertByPath`):
-      `reflect.TypeOf(found).Kind()` panics when `found` is `nil` (a JSON `null` along the path).
-      Add a `found == nil` check before the reflect call, return a clean error instead.
-- [ ] **B2** `utilities.go:324` (`parseNode`): silently coerces unrecognized Go types (`int64`,
-      `int32`, `uint`, `uint64`, `float32`, ...) to `Null` (line 384 default case) instead of
-      erroring or converting. Extend the type switch to cover common numeric types. Note
-      `node.go`'s `Type()` already has a `case int64` (lines 34/160/180) that's currently dead code
-      because of this gap.
-- [ ] **B3** `manager.go:396` (remove) and `manager.go:462,475` (replace): `history.ChangeEvent`'s
-      `OldValue` stores the raw `*Node.value` for object/array values (`map[string]*Node`/
-      `[]*Node`, unexported internals) — prints as pointer addresses, and worse, silently
-      serializes to `{}` via `ChangeHistory.ExportJSON()` (`history/change_event.go:95`) since
-      `Node`'s `value` field is unexported and invisible to `encoding/json`. Add a
-      `nodeValueToPlain(*Node) interface{}` helper (recursively unwrap to
-      `map[string]interface{}`/`[]interface{}`/scalar) and use it wherever Old/NewValue comes from
-      a `*Node` rather than the caller's original raw value.
-- [ ] **B4** `manager.go:193` (`GetCustomValidator`) + `validation_service.go:112-142`
-      (`customValidator`): no internal synchronization, but reachable for external mutation
-      concurrently with Manager's own locked calls into it — real data-race potential (Go panics on
-      detected concurrent map access). Either remove the raw getter (route everything through the
-      already-locked `Manager.AddValidator`) or add a mutex inside `customValidator`.
-- [ ] **B5** `manager.go:82-88` (`Config()`): doc comment says it returns a deep copy "to prevent
-      data races" but the `DeepCopy()` call is commented out — it returns the live internal `*Node`
-      (required, since `OnInsert`/`OnRemove`/`OnReplace` need the real pointer for path-identity
-      lookups). Fix the comment to describe actual behavior; don't change the behavior.
+- [x] **B1** `utilities.go` (`jsonSetByPath`/`jsonRemoveByPath`/`jsonInsertByPath`):
+      `reflect.TypeOf(found).Kind()` panicked when `found` is `nil` (a JSON `null` along the path) —
+      confirmed empirically in isolation before fixing (`reflect.TypeOf(nil).Kind()` → "invalid
+      memory address or nil pointer dereference"). Added a `found == nil` check before the reflect
+      call in all three functions, returning a clean error instead. Regression tests:
+      `TestJsonByPath_NilInPath_DoesNotPanic`, `TestJsonByPath_NilArrayElement_DoesNotPanic`
+      (`utilities_test.go`) — call the unexported functions directly (an external `Manager`-level
+      test can't reach this path: `findModifiableLocked` rejects an unregistered path before ever
+      reaching `jsonSetByPath`, so the nil-in-path case is only reachable by exercising these
+      functions directly, or when a registered path's Node-tree location and the freshly-cloned JSON
+      copy briefly disagree).
+- [x] **B2** `utilities.go` (`parseNode`): extended the type switch to cover
+      `int64/int32/int16/int8/uint/uint64/uint32/uint16/uint8` (normalized to `int64`) and `float32`
+      (normalized to `float64`) instead of falling through to the `default: Null` case. `node.go`'s
+      `Type()` `case int64` is no longer dead code. Regression test:
+      `TestParseNode_NumericTypeCoverage` (`utilities_test.go`) — one subtest per Go numeric type.
+- [x] **B3** `manager.go` (`removeLocked`'s `OldValue: removedNode.value` and `replaceLocked`'s
+      `oldValue := oldNode.value`): both stored the raw internal `*Node.value` for object/array
+      values — unexported `map[string]*Node`/`[]*Node`, printing as pointer addresses and
+      serializing to `{}` via `ChangeHistory.ExportJSON()`. Added `nodeValueToPlain(*Node)
+      interface{}` (`utilities.go`) — recursively unwraps to plain `map[string]interface{}`/
+      `[]interface{}`/scalar — and used it at both call sites. (`insertLocked`'s `NewValue`/
+      `replaceLocked`'s `NewValue` were already fine — they store the caller's original raw value,
+      never a `*Node`.) Regression test: `TestManager_History_OldValueIsPlain` (new
+      `manager_test.go`, added as part of this phase) — asserts `OldValue` is a
+      `map[string]interface{}`, not a `map[string]*goconfig.Node`.
+- [x] **B4** `validation_service.go` (`customValidator`): added its own `sync.RWMutex` (independent
+      of `Manager.mu`, since `GetCustomValidator()` hands this pointer out for use outside any
+      Manager-held lock) — `AddValidator` takes the write lock, `Validate` takes a read lock around
+      the map read only (releases before calling validator functions, so a validator itself calling
+      back into `AddValidator` can't deadlock). Kept `GetCustomValidator()` rather than removing it
+      (would have been a breaking API change) — the mutex makes the getter safe regardless of how
+      it's used. Verified with `go run -race` on a scratch program hammering concurrent
+      `AddValidator`/`Validate` — clean, no race reported (confirmed the race existed before this
+      fix by reasoning about the unguarded map, consistent with Go's documented map-concurrency
+      rules).
+- [x] **B5** `manager.go` (`Config()`): rewrote the doc comment to describe actual behavior (returns
+      the live internal `*Node`, required for `OnInsert`/`OnRemove`/`OnReplace` pointer-identity
+      lookups; treat as read-only) instead of the stale "returns a deep copy" claim next to a
+      commented-out `DeepCopy()` call. No behavior change, ties into the Phase 2 concurrency
+      contract this comment now references.
+
+Verified: `go build ./...` + `go vet ./...` clean; `go test ./...` (new tests) passing;
+`go run ./examples/basic` re-run as a behavioral regression check (Phase 1 didn't touch
+`httpserver`/`routes.go`, so the four HTTP examples were not re-run individually).
 
 ### Phase 2 — Concurrency (own phase, needs discussion before implementing)
 

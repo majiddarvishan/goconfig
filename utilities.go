@@ -33,6 +33,9 @@ func jsonSetByPath(jsonMap *orderedmap.OrderedMap, path string, value interface{
 		if !present {
 			return fmt.Errorf("path element '%s' not found", splited_path[i])
 		}
+		if found == nil {
+			return fmt.Errorf("path element '%s' is null, cannot traverse further", splited_path[i])
+		}
 
 		k := reflect.TypeOf(found).Kind()
 		switch k {
@@ -105,6 +108,9 @@ func jsonRemoveByPath(jsonMap *orderedmap.OrderedMap, path string, index int) er
 		found, present := foundMap.Get(splited_path[i])
 		if !present {
 			return fmt.Errorf("path element '%s' not found", splited_path[i])
+		}
+		if found == nil {
+			return fmt.Errorf("path element '%s' is null, cannot traverse further", splited_path[i])
 		}
 
 		k := reflect.TypeOf(found).Kind()
@@ -195,6 +201,9 @@ func jsonInsertByPath(jsonMap *orderedmap.OrderedMap, path string, index int, va
 		found, present := foundMap.Get(splited_path[i])
 		if !present {
 			return fmt.Errorf("path element '%s' not found", splited_path[i])
+		}
+		if found == nil {
+			return fmt.Errorf("path element '%s' is null, cannot traverse further", splited_path[i])
 		}
 
 		k := reflect.TypeOf(found).Kind()
@@ -375,8 +384,28 @@ func parseNode(value any) *Node {
 		node.value = v
 	case int:
 		node.value = v
+	case int64:
+		node.value = v
+	case int32:
+		node.value = int64(v)
+	case int16:
+		node.value = int64(v)
+	case int8:
+		node.value = int64(v)
+	case uint:
+		node.value = int64(v)
+	case uint64:
+		node.value = int64(v)
+	case uint32:
+		node.value = int64(v)
+	case uint16:
+		node.value = int64(v)
+	case uint8:
+		node.value = int64(v)
 	case float64:
 		node.value = v
+	case float32:
+		node.value = float64(v)
 	case bool:
 		node.value = v
 	case nil:
@@ -386,6 +415,35 @@ func parseNode(value any) *Node {
 	}
 
 	return node
+}
+
+// nodeValueToPlain recursively converts a Node's internal tree
+// representation (map[string]*Node / []*Node) into plain Go values
+// (map[string]interface{} / []interface{}) suitable for storing outside this
+// package - e.g. in a history.ChangeEvent. The raw internal representation
+// holds unexported *Node pointers, which print as addresses (%v) and
+// serialize to "{}" via encoding/json since Node.value is unexported.
+func nodeValueToPlain(n *Node) interface{} {
+	if n == nil {
+		return nil
+	}
+
+	switch v := n.value.(type) {
+	case map[string]*Node:
+		out := make(map[string]interface{}, len(v))
+		for k, child := range v {
+			out[k] = nodeValueToPlain(child)
+		}
+		return out
+	case []*Node:
+		out := make([]interface{}, len(v))
+		for i, child := range v {
+			out[i] = nodeValueToPlain(child)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // Clone creates a deep copy of an OrderedMap

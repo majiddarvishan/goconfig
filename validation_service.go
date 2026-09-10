@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -108,8 +109,17 @@ func (vs *validationService) Validate(ctx context.Context, config, schema interf
 // validatorFunc is a custom validation function
 type validatorFunc func(path string, oldValue, newValue *Node) error
 
-// customValidator holds custom validation rules
+// customValidator holds custom validation rules.
+//
+// Guarded by its own mutex (independent of Manager.mu) because
+// GetCustomValidator() hands out this pointer for external use (e.g. calling
+// AddValidator from outside any Manager-held lock), while Manager's own
+// insertLocked/removeLocked/replaceLocked call Validate concurrently under
+// Manager.mu - without this, concurrent AddValidator (map write) and
+// Validate (map read) is a data race Go's race detector (and, at worst,
+// the runtime) will catch.
 type customValidator struct {
+	mu         sync.RWMutex
 	validators map[string][]validatorFunc
 }
 
@@ -122,15 +132,16 @@ func NewCustomValidator() *customValidator {
 
 // AddValidator adds a validation function for a specific path
 func (cv *customValidator) AddValidator(path string, validator validatorFunc) {
+	cv.mu.Lock()
+	defer cv.mu.Unlock()
 	cv.validators[path] = append(cv.validators[path], validator)
 }
 
 // Validate runs all validators for the given path
 func (cv *customValidator) Validate(path string, oldValue, newValue *Node) error {
-	validators, exists := cv.validators[path]
-	if !exists {
-		return nil
-	}
+	cv.mu.RLock()
+	validators := cv.validators[path]
+	cv.mu.RUnlock()
 
 	for _, validator := range validators {
 		if err := validator(path, oldValue, newValue); err != nil {

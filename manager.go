@@ -79,11 +79,17 @@ func NewManager(source ISource) (*Manager, error) {
 	return m, nil
 }
 
-// Config returns a deep copy of the config to prevent data races
+// Config returns the live, internal config tree - NOT a copy. A deep copy
+// is not viable here: OnInsert/OnRemove/OnReplace identify a node to watch
+// by its *Node pointer identity, so callers must be able to obtain and hand
+// back the *same* pointers this Manager holds internally. Treat the returned
+// tree as read-only; mutate it only through Insert/Remove/Replace, never by
+// writing through the returned pointers directly - see the concurrency
+// contract documented on Manager for what's and isn't safe to do with it
+// concurrently with other Manager calls.
 func (m *Manager) Config() *Node {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	// return m.config.DeepCopy()
 	return m.config
 }
 
@@ -393,7 +399,7 @@ func (m *Manager) removeLocked(path string, index int) error {
 		Operation: "remove",
 		Path:      path,
 		Index:     &index,
-		OldValue:  removedNode.value,
+		OldValue:  nodeValueToPlain(removedNode),
 		Version:   m.version,
 	})
 
@@ -438,7 +444,7 @@ func (m *Manager) replaceLocked(path string, value interface{}) error {
 
 	// Backup for rollback
 	oldNode := *mod.Node
-	oldValue := oldNode.value
+	oldValue := nodeValueToPlain(&oldNode)
 
 	// Mutate
 	*mod.Node = *newNode
