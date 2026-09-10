@@ -17,8 +17,11 @@ type ISource interface {
 	// The returned pointer should not be mutated
 	getSchema() *string
 
-	// setConfig updates the configuration atomically
-	// Must validate and persist the configuration
-	// Returns error if validation or persistence fails
-	setConfig(*orderedmap.OrderedMap) error
+	// setConfig updates the configuration atomically. `data` is the
+	// already-JSON-marshaled form of conf (Manager marshals once and
+	// reuses it for both schema validation and this call, rather than
+	// marshaling the same object twice) - implementations should persist
+	// `data` directly rather than re-marshaling `conf`.
+	// Must persist the configuration; returns error if persistence fails.
+	setConfig(conf *orderedmap.OrderedMap, data []byte) error
 }

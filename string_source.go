@@ -1,7 +1,6 @@
 package goconfig
 
 import (
-	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -52,19 +51,17 @@ func (s *StrSource) getSchema() *string {
 	return &schema
 }
 
-func (s *StrSource) setConfig(conf *orderedmap.OrderedMap) error {
+func (s *StrSource) setConfig(conf *orderedmap.OrderedMap, data []byte) error {
 	if conf == nil {
 		return fmt.Errorf("config cannot be nil")
 	}
-
-	configBytes, err := json.MarshalIndent(conf, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
+	if len(data) == 0 {
+		return fmt.Errorf("data cannot be empty")
 	}
 
 	s.mu.Lock()
 	s.configObject = conf
-	s.config = string(configBytes)
+	s.config = string(data)
 	s.mu.Unlock()
 
 	return nil

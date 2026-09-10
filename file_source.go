@@ -74,19 +74,17 @@ func (fs *FileSource) getSchema() *string {
 	return &schema
 }
 
-func (fs *FileSource) setConfig(conf *orderedmap.OrderedMap) error {
+func (fs *FileSource) setConfig(conf *orderedmap.OrderedMap, data []byte) error {
 	if conf == nil {
 		return fmt.Errorf("config cannot be nil")
 	}
-
-	configBytes, err := json.MarshalIndent(conf, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
+	if len(data) == 0 {
+		return fmt.Errorf("data cannot be empty")
 	}
 
 	// Write to temp file first, then rename (atomic operation)
 	tempPath := fs.configPath + ".tmp"
-	err = os.WriteFile(tempPath, configBytes, 0644)
+	err := os.WriteFile(tempPath, data, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
@@ -99,7 +97,7 @@ func (fs *FileSource) setConfig(conf *orderedmap.OrderedMap) error {
 
 	fs.mu.Lock()
 	fs.configObject = conf
-	fs.config = string(configBytes)
+	fs.config = string(data)
 	fs.mu.Unlock()
 
 	return nil

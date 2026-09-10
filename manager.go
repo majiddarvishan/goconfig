@@ -323,7 +323,14 @@ func (m *Manager) insertLocked(path string, index int, value interface{}) error 
 		return fmt.Errorf("failed to insert: %w", err)
 	}
 
-	if err := validateJSONAgainstSchema(jsonConfig, m.source.getSchema()); err != nil {
+	// Marshal once, reuse for both schema validation and persistence below
+	// (this used to be two separate full-document marshals).
+	configBytes, err := json.MarshalIndent(jsonConfig, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	if err := validateJSONBytesAgainstSchema(configBytes, m.source.getSchema()); err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -353,8 +360,8 @@ func (m *Manager) insertLocked(path string, index int, value interface{}) error 
 		}
 	}
 
-	// Persist changes
-	if err := m.source.setConfig(jsonConfig); err != nil {
+	// Persist changes (reuses configBytes marshaled above for validation)
+	if err := m.source.setConfig(jsonConfig, configBytes); err != nil {
 		*mod.Node = Node{oldArray}
 		return fmt.Errorf("failed to persist config: %w", err)
 	}
@@ -417,7 +424,12 @@ func (m *Manager) removeLocked(path string, index int) error {
 		return fmt.Errorf("failed to remove: %w", err)
 	}
 
-	if err := validateJSONAgainstSchema(jsonConfig, m.source.getSchema()); err != nil {
+	configBytes, err := json.MarshalIndent(jsonConfig, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	if err := validateJSONBytesAgainstSchema(configBytes, m.source.getSchema()); err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -447,7 +459,7 @@ func (m *Manager) removeLocked(path string, index int) error {
 	}
 
 	// Persist
-	if err := m.source.setConfig(jsonConfig); err != nil {
+	if err := m.source.setConfig(jsonConfig, configBytes); err != nil {
 		*mod.Node = Node{oldArray}
 		return fmt.Errorf("failed to persist config: %w", err)
 	}
@@ -507,7 +519,12 @@ func (m *Manager) replaceLocked(path string, value interface{}) error {
 		return fmt.Errorf("failed to set: %w", err)
 	}
 
-	if err := validateJSONAgainstSchema(jsonConfig, m.source.getSchema()); err != nil {
+	configBytes, err := json.MarshalIndent(jsonConfig, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	if err := validateJSONBytesAgainstSchema(configBytes, m.source.getSchema()); err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -533,7 +550,7 @@ func (m *Manager) replaceLocked(path string, value interface{}) error {
 	}
 
 	// Persist
-	if err := m.source.setConfig(jsonConfig); err != nil {
+	if err := m.source.setConfig(jsonConfig, configBytes); err != nil {
 		*mod.Node = oldNode
 		return fmt.Errorf("failed to persist config: %w", err)
 	}
@@ -699,12 +716,14 @@ func (m *Manager) findAndSanitizeNodePathLocked(n *Node) (string, error) {
 // HELPERS
 ////////////////////////////////////////////////////////////////////////////////
 
-func validateJSONAgainstSchema(obj interface{}, schema *string) error {
-	b, err := json.Marshal(obj)
-	if err != nil {
-		return fmt.Errorf("failed to marshal object: %w", err)
-	}
-	s := string(b)
+// validateJSONBytesAgainstSchema validates already-marshaled JSON bytes
+// against schema. Split out from the old marshal-then-validate helper so
+// insertLocked/removeLocked/replaceLocked can marshal the proposed config
+// exactly once and reuse those same bytes for both schema validation and
+// persistence (source.setConfig), instead of marshaling the same object
+// twice.
+func validateJSONBytesAgainstSchema(data []byte, schema *string) error {
+	s := string(data)
 	return validate(&s, schema)
 }
 

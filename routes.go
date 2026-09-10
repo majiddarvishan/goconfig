@@ -162,22 +162,30 @@ func (m *Manager) serveConfigPost(w http.ResponseWriter, r *http.Request) {
 	writeRouteSuccess(w, data)
 }
 
+// buildConfigState assembles the /config response body. It embeds the
+// config/schema JSON via json.RawMessage rather than unmarshaling the
+// strings ConfigJSON()/SchemaJSON() already hold back into a fresh
+// orderedmap.OrderedMap - Manager already parsed this data once when it was
+// last set; a Marshal-then-Unmarshal-then-Marshal round trip on every
+// single GET/POST /config request added nothing but the cost of reparsing
+// the entire document each time.
 func (m *Manager) buildConfigState() (*orderedmap.OrderedMap, error) {
-	confJSON := orderedmap.New()
-	schemaJSON := orderedmap.New()
-
 	configStr := m.ConfigJSON()
 	if configStr == "" {
 		return nil, fmt.Errorf("config is empty")
 	}
-	if err := json.Unmarshal([]byte(configStr), &confJSON); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+	if !json.Valid([]byte(configStr)) {
+		return nil, fmt.Errorf("stored config is not valid JSON")
 	}
 
+	var schemaRaw json.RawMessage
 	if schemaStr := m.SchemaJSON(); schemaStr != "" {
-		if err := json.Unmarshal([]byte(schemaStr), &schemaJSON); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal schema: %w", err)
+		if !json.Valid([]byte(schemaStr)) {
+			return nil, fmt.Errorf("stored schema is not valid JSON")
 		}
+		schemaRaw = json.RawMessage(schemaStr)
+	} else {
+		schemaRaw = json.RawMessage("{}")
 	}
 
 	paths := orderedmap.New()
@@ -187,8 +195,8 @@ func (m *Manager) buildConfigState() (*orderedmap.OrderedMap, error) {
 
 	out := orderedmap.New()
 	out.Set("modifiable_paths", paths)
-	out.Set("config", confJSON)
-	out.Set("schema", schemaJSON)
+	out.Set("config", json.RawMessage(configStr))
+	out.Set("schema", schemaRaw)
 	out.Set("version", m.Version())
 
 	return out, nil

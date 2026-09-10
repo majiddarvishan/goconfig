@@ -240,6 +240,51 @@ Verified: `go build ./...` + `go vet ./...` clean; `go test ./...` (new tests) p
 Verified: `go build ./...` + `go vet ./...` clean; `go test -race ./...` passing (full suite,
 including Phase 1's tests).
 
+### Phase 3 — Performance — ✅ DONE
+
+- [x] **P1** Every Insert/Remove/Replace did up to 3 full-document JSON marshals: `Clone()`
+      (1 marshal + 1 unmarshal), `validateJSONAgainstSchema` (a 2nd marshal), and
+      `source.setConfig`'s own internal `json.MarshalIndent` (a 3rd). Consolidated the 2nd and 3rd:
+      `insertLocked`/`removeLocked`/`replaceLocked` now marshal the proposed config exactly once
+      (`json.MarshalIndent`) right after mutating the cloned copy, validate schema from those same
+      bytes (new `validateJSONBytesAgainstSchema`, replacing the old marshal-then-validate helper),
+      and pass the same bytes to `source.setConfig` for persistence. Changed `ISource.setConfig`'s
+      signature to `setConfig(conf *orderedmap.OrderedMap, data []byte) error` so `FileSource`/
+      `StrSource` write `data` directly instead of re-marshaling `conf` themselves — safe to change
+      since `ISource`'s methods are unexported (Known Issue #1), so only in-package implementations
+      exist. Net: 3 marshals → 2 per mutation.
+
+      **Honest performance finding, not oversold**: ran the "quick before/after timing comparison"
+      the plan itself asked for (500-item array, 200 insert+remove cycles) — result was
+      **~12.3-13.3ms/op both before and after**, no measurable difference. Traced why: `Clone()`'s
+      own marshal+unmarshal round-trip and, more significantly, `gojsonschema`'s *own* internal
+      re-parse of the validated JSON string (independent of anything `validateJSONBytesAgainstSchema`
+      does — `gojsonschema.Validate` takes a loader and parses the document itself) dominate the
+      per-call cost far more than the one marshal this phase removed. The fix is still correct and
+      worth keeping (it's a real, verified reduction from 3 marshals to 2, with zero behavior
+      change), but **do not claim a measured speedup from it alone** — a real improvement here would
+      need to also avoid `gojsonschema`'s internal reparse (e.g. `gojsonschema.NewGoLoader` fed the
+      already-in-memory value instead of a string/bytes loader) and/or replace `Clone()`'s JSON
+      round-trip with a native `orderedmap` deep-copy — both bigger, riskier changes than what P1
+      was scoped for, noted here but not implemented.
+- [x] **P2** `routes.go`'s `buildConfigState()` called `m.ConfigJSON()` (a string) then
+      `json.Unmarshal`ed it into a fresh `orderedmap.OrderedMap`, and did the same for the schema —
+      on *every single* `GET`/`POST /config` request — even though that string was itself produced by
+      marshaling an `orderedmap.OrderedMap` moments earlier (inside `setConfig`). Replaced both
+      round-trips with `json.RawMessage(configStr)`/`json.RawMessage(schemaStr)`, confirming first
+      (by reading `orderedmap`'s own `MarshalJSON`, which calls `encoder.Encode` per value) that a
+      `json.RawMessage` value embeds correctly without re-parsing. Kept a cheap `json.Valid()` check
+      (well-formedness scan, no allocation of a parsed tree) rather than dropping validation
+      entirely, since a corrupted stored string should still surface as a clean error, not garbage
+      embedded in the response. Verified against a **real running example**
+      (`examples/httpserver-embedded`): `GET /config`, `POST /config` (insert), and a follow-up
+      `GET /config` all produced byte-identical response shapes to before this change, with the
+      version bump and new data correctly reflected.
+
+Verified: `go build ./...` + `go vet ./...` clean; `go test -race ./...` passing; real HTTP example
+run end-to-end for P2 (GET/POST/GET); timing comparison run for P1 (see honest finding above —
+correct fix, not a measured win on its own).
+
 ### Phase 3 — Performance
 
 - [ ] **P1** Every Insert/Remove/Replace does up to 3 full-document JSON marshals + 1 unmarshal:
