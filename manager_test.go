@@ -1,9 +1,11 @@
 package goconfig
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const testSchema = `{
@@ -102,4 +104,91 @@ func TestCustomValidator_ConcurrentAccess(t *testing.T) {
 	}()
 
 	wg.Wait()
+}
+
+// C1 regression: two concurrent mutations on the *same* path must not
+// interleave across the handler-call window (where the global mutex is
+// released). Before per-path locking, a rollback in one mutation (triggered
+// by its handler returning an error) could wipe out a completely unrelated
+// concurrent mutation on the same path that happened to land during that
+// window - even though that second mutation succeeded on its own.
+//
+// Scenario: goroutine A inserts "trigger-fail" - its handler sleeps
+// (simulating real work) and then returns an error, forcing a rollback to
+// the array as it was *before* A's insert. Goroutine B inserts "b"
+// concurrently, with a handler that always succeeds. If A and B correctly
+// serialize on the same path, B's insert cannot start until A (including
+// its rollback) has fully finished - so the end state must be exactly
+// ["b"], never something A's rollback partially or fully erased.
+func TestManager_PerPathLocking_ConcurrentSamePath(t *testing.T) {
+	schema := `{"type":"object","properties":{"items":{"type":"array","items":{"type":"string"}}}}`
+	src, err := NewStrSource(`{"items":[]}`, schema)
+	if err != nil {
+		t.Fatalf("NewStrSource: %v", err)
+	}
+	m, err := NewManager(src)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	itemsNode, err := m.Config().At("items")
+	if err != nil {
+		t.Fatalf("At(items): %v", err)
+	}
+
+	if err := m.OnInsert(itemsNode, func(n *Node) error {
+		s, _ := n.GetString()
+		if s == "trigger-fail" {
+			time.Sleep(50 * time.Millisecond)
+			return errors.New("intentional failure to trigger rollback")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("OnInsert: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	var errA, errB error
+	go func() {
+		defer wg.Done()
+		errA = m.Insert("/items", 0, "trigger-fail")
+	}()
+
+	// Give goroutine A a head start so it's inside its handler's sleep
+	// window when B attempts its own Insert on the same path.
+	time.Sleep(10 * time.Millisecond)
+
+	go func() {
+		defer wg.Done()
+		errB = m.Insert("/items", 0, "b")
+	}()
+
+	wg.Wait()
+
+	if errA == nil {
+		t.Fatal("expected A's insert to fail (handler returns an error), got nil")
+	}
+	if errB != nil {
+		t.Fatalf("expected B's insert to succeed, got: %v", errB)
+	}
+
+	arr, err := m.Config().At("items")
+	if err != nil {
+		t.Fatalf("At(items) after mutations: %v", err)
+	}
+	items, err := arr.GetArray()
+	if err != nil {
+		t.Fatalf("GetArray: %v", err)
+	}
+
+	got := make([]string, len(items))
+	for i, n := range items {
+		got[i], _ = n.GetString()
+	}
+
+	if len(got) != 1 || got[0] != "b" {
+		t.Fatalf("final items = %v, want exactly [\"b\"] (A's rollback must not have touched B's successful insert, and B must not have been lost to A's rollback)", got)
+	}
 }

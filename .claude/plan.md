@@ -206,15 +206,39 @@ Verified: `go build ./...` + `go vet ./...` clean; `go test ./...` (new tests) p
 `go run ./examples/basic` re-run as a behavioral regression check (Phase 1 didn't touch
 `httpserver`/`routes.go`, so the four HTTP examples were not re-run individually).
 
-### Phase 2 — Concurrency (own phase, needs discussion before implementing)
+### Phase 2 — Concurrency — ✅ DONE
 
-- [ ] **C1** `manager.go:283/285` (insert), `370/372` (remove), `450/452` (replace): `m.mu` is
-      unlocked around the `OnInsert`/`OnRemove`/`OnReplace` handler call, but the tree is already
-      mutated before that unlock — a concurrent read during the handler window can observe
-      not-yet-committed state, and a concurrent second mutation on the same array during that
-      window can have its change silently discarded if the first mutation's handler fails and
-      rolls back. At minimum, document this contract clearly; discuss with user whether a
-      behavioral fix (e.g. per-path serialization) is wanted, since it changes locking semantics.
+- [x] **C1** `manager.go`: `m.mu` is unlocked around the `OnInsert`/`OnRemove`/`OnReplace` handler
+      call, but the tree is already mutated before that unlock — a concurrent second mutation on the
+      same array during that window could have its change silently discarded if the first mutation's
+      handler failed and rolled back. **Asked the user which fix they wanted** (per the note this
+      section carried) — chose **per-path serialization** over documentation-only.
+
+      Implemented: `Manager` gained `pathLocks sync.Map` (lazily-created `*sync.Mutex` per distinct
+      path string, via new `pathLock(path)`); `Insert`/`Remove`/`Replace` (the exported entry
+      points) now acquire that path's lock *before* the global `m.mu.Lock()` and hold it for the
+      entire call, including the handler-call window where `m.mu` is released — so two
+      Insert/Remove/Replace calls on the *same* path can never interleave, while calls on
+      *different* paths remain fully concurrent. `routes.go`'s HTTP handlers call the exported
+      `m.Insert`/`m.Remove`/`m.Replace` (never the `*Locked` internals directly), so the fix covers
+      the HTTP-driven path too, not just direct `Manager` API use. Documented the full concurrency
+      contract in a new doc comment on the `Manager` type itself (including the one real caveat:
+      a handler that calls back into Insert/Remove/Replace on the *same* path it was invoked for
+      will deadlock — the per-path lock isn't reentrant, and that pattern isn't supported).
+      Also noted as a caveat, not fixed: `pathLocks` entries are never evicted, so a workload with
+      unbounded/ever-changing path strings would leak one mutex per distinct path forever — fine for
+      this library's intended use (a bounded, largely-static set of registered modifiable paths).
+
+      Regression test `TestManager_PerPathLocking_ConcurrentSamePath` (`manager_test.go`): goroutine
+      A inserts a value whose handler sleeps then fails (forcing a rollback); goroutine B inserts a
+      different value on the *same* path while A is still mid-handler. Asserts the final array is
+      exactly B's value alone — proving B's successful insert survives A's rollback rather than
+      being wiped or corrupted. **Verified the test is meaningful**: reverted only the `manager.go`
+      locking change (test file untouched) and reran — failed consistently, 5/5 runs; reapplied the
+      fix — passes consistently under both plain `go test` and `go test -race`.
+
+Verified: `go build ./...` + `go vet ./...` clean; `go test -race ./...` passing (full suite,
+including Phase 1's tests).
 
 ### Phase 3 — Performance
 

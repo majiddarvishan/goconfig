@@ -27,6 +27,29 @@ type modifiable struct {
 	Handler handler_t
 }
 
+// Manager is the central config engine: loads a config+schema through an
+// ISource, keeps it as a mutable Node tree, and mutates it only through
+// Insert/Remove/Replace on paths registered via OnInsert/OnRemove/OnReplace.
+//
+// Concurrency contract:
+//   - All exported methods are safe to call concurrently from multiple
+//     goroutines.
+//   - Insert/Remove/Replace release the global lock (mu) around the call
+//     into the registered OnInsert/OnRemove/OnReplace handler, so a handler
+//     is free to call back into the Manager itself (e.g. Query, or Insert/
+//     Remove/Replace on a *different* path) without deadlocking.
+//   - During that released window, the target array/node has already been
+//     mutated in memory but not yet validated/persisted - a concurrent
+//     Insert/Remove/Replace on the *same* path is therefore serialized via
+//     a per-path lock (see pathLock) so it cannot observe or race with that
+//     in-flight, not-yet-committed state; mutations on *different* paths are
+//     not serialized against each other and may interleave freely.
+//   - A handler that itself calls Insert/Remove/Replace on the *same* path
+//     it was invoked for will deadlock (the per-path lock is not
+//     reentrant) - not a supported pattern.
+//   - Config() returns the live internal tree, not a copy (see its own doc
+//     comment) - treat it as read-only and only mutate through Insert/
+//     Remove/Replace.
 type Manager struct {
 	mu sync.RWMutex
 
@@ -48,6 +71,15 @@ type Manager struct {
 
 	// External validation
 	validationService *validationService
+
+	// Per-path locks (map[string]*sync.Mutex, lazily created) - see
+	// pathLock() and the concurrency contract on Insert/Remove/Replace
+	// below. Independent of mu: mu guards the shared tree/modifiables
+	// state for the brief windows it's actually held; a path lock
+	// serializes the *entire* Insert/Remove/Replace call (including the
+	// window where mu is released for the OnInsert/OnRemove/OnReplace
+	// handler) for mutations that target the same path.
+	pathLocks sync.Map
 }
 
 func NewManager(source ISource) (*Manager, error) {
@@ -225,11 +257,36 @@ func (m *Manager) SchemaJSON() string {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// PER-PATH LOCKING
+////////////////////////////////////////////////////////////////////////////////
+
+// pathLock returns the *sync.Mutex serializing all Insert/Remove/Replace
+// calls for the given path, creating one on first use. Entries are never
+// removed, so long-running processes that mutate a very large, ever-
+// changing set of distinct path strings will accumulate one *sync.Mutex per
+// distinct path seen - acceptable for the bounded, largely-static set of
+// registered modifiable paths this library is designed around; not
+// suitable for a workload with unbounded path churn.
+func (m *Manager) pathLock(path string) *sync.Mutex {
+	v, _ := m.pathLocks.LoadOrStore(path, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // INSERT (improved with all features)
 ////////////////////////////////////////////////////////////////////////////////
 
 // Insert adds value at index into the array registered via OnInsert for path.
+//
+// Concurrency: serialized per path (see pathLock) - two concurrent Insert/
+// Remove/Replace calls targeting the *same* path never interleave, even
+// across the window where the global lock is released for the OnInsert
+// handler call. Calls targeting different paths still run concurrently.
 func (m *Manager) Insert(path string, index int, value interface{}) error {
+	pl := m.pathLock(path)
+	pl.Lock()
+	defer pl.Unlock()
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.insertLocked(path, index, value)
@@ -324,7 +381,13 @@ func (m *Manager) insertLocked(path string, index int, value interface{}) error 
 ////////////////////////////////////////////////////////////////////////////////
 
 // Remove deletes the element at index from the array registered via OnRemove for path.
+//
+// Concurrency: see the note on Insert - serialized per path.
 func (m *Manager) Remove(path string, index int) error {
+	pl := m.pathLock(path)
+	pl.Lock()
+	defer pl.Unlock()
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.removeLocked(path, index)
@@ -411,7 +474,13 @@ func (m *Manager) removeLocked(path string, index int) error {
 ////////////////////////////////////////////////////////////////////////////////
 
 // Replace sets the value at path registered via OnReplace.
+//
+// Concurrency: see the note on Insert - serialized per path.
 func (m *Manager) Replace(path string, value interface{}) error {
+	pl := m.pathLock(path)
+	pl.Lock()
+	defer pl.Unlock()
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.replaceLocked(path, value)
