@@ -151,12 +151,12 @@ in it, referencing `examples/` instead, keep a "Thanks" section at the end with 
 - [x] `go build ./...` + `go vet ./...` clean; ran `go run ./examples/history` to confirm output.
 - [x] Report summary to user; **do not commit** — ask first per user instruction
 
-## 10. Full codebase review — bugs, performance, cleanliness (NOT STARTED — plan only)
+## 10. Full codebase review — bugs, performance, cleanliness — ✅ ALL 4 PHASES DONE
 
 User asked for a full review pass (not a diff review) of the whole module for bugs, performance
-issues, and cleanliness/structure, phased for later implementation. **User explicitly said not to
-start implementing yet** — this section is a TODO list to come back to when told to. Every finding
-was verified against current source, not assumed. Nothing below is done.
+issues, and cleanliness/structure, phased for later implementation. Findings were originally logged
+here as a TODO list pending the go-ahead to implement; user later asked to go through all 4 phases
+in sequence, which is now done — see each phase below for what changed and how it was verified.
 
 ### Phase 1 — Bug fixes — ✅ DONE
 
@@ -285,42 +285,69 @@ Verified: `go build ./...` + `go vet ./...` clean; `go test -race ./...` passing
 run end-to-end for P2 (GET/POST/GET); timing comparison run for P1 (see honest finding above —
 correct fix, not a measured win on its own).
 
-### Phase 3 — Performance
+### Phase 4 — Cleanliness & structure — ✅ DONE
 
-- [ ] **P1** Every Insert/Remove/Replace does up to 3 full-document JSON marshals + 1 unmarshal:
-      `Clone()` (`utilities.go:392`), `validateJSONAgainstSchema` (`manager.go:627`), and
-      `source.setConfig`'s internal marshal (`file_source.go`/`string_source.go`). Consolidate
-      where reasonable (e.g. reuse the validation marshal's bytes for persistence).
-- [ ] **P2** `routes.go`'s `buildConfigState` calls `m.ConfigJSON()` (string) then
-      `json.Unmarshal`s it back into an `orderedmap.OrderedMap` on every `/config` request, even
-      though `ISource.getConfigObject()` already holds a live parsed one. Avoid the round-trip.
-- [ ] *(Noted, not scheduled)* path cache (`manager.go` `rebuildPathCache`) fully rebuilds on every
-      mutation rather than incrementally — only worth acting on if profiling shows it matters.
+- [x] **S1** `jsonSetByPath`/`jsonRemoveByPath`/`jsonInsertByPath` (`utilities.go`) shared ~90%
+      duplicated "walk to parent map" code (three independent copies — exactly how the B1 nil-check
+      and the pre-existing off-by-one-prone bounds logic could drift between them). Extracted the
+      shared traversal into `navigateToParentMap(jsonMap, path) (parent *orderedmap.OrderedMap,
+      lastKey string, err error)`; all three functions are now thin wrappers that call it and then
+      do their own final `Set`/array-splice on `parent`/`lastKey`. Confirmed behavior-preserving:
+      full test suite (including all of Phase 1's B1/B2 regression tests, which exercise this exact
+      code) passes unchanged after the extraction.
+- [x] **S2** Removed the three dead `// handlerNode := ...DeepCopy()` comments in `manager.go`
+      (insert/remove/replace), replacing them with a real explanation of *why* `DeepCopy` is
+      skipped: the handler runs with the global lock released, but Phase 2's per-path lock already
+      prevents any concurrent Insert/Remove/Replace on the same path from touching the node during
+      that window, so handing the handler the live node directly is safe, not an oversight. (The
+      fourth dead-code item this bullet originally listed, `Config()`'s `// return
+      m.config.DeepCopy()`, was already removed as part of Phase 1's B5 fix.) Also fixed a stale,
+      actively misleading comment found while touching this exact code: "Call handler after
+      successful persistence" — persistence (`source.setConfig`) actually happens *after* the
+      handler call, not before; rewrote it to describe the real order and why.
+- [x] **S3** Renamed `NewvalidationService` → `NewValidationService` (matches the `NewXxx`
+      convention every other constructor in this module uses — `NewManager`, `NewCustomValidator`,
+      `NewFileSource`, `NewStrSource`). Also fixed the same casing typo in `NewCustomValidator`'s own
+      doc comment (`// NewcustomValidator` → `// NewCustomValidator`), found while in this file.
+      Confirmed via a scratch external-module program that `NewValidationService(...)` +
+      `Manager.SetValidationService(...)` are both fully usable from *outside* the package now (the
+      unexported `*validationService` return type doesn't block this — Go allows holding/passing an
+      unexported type via an exported function, it just can't be named explicitly outside the
+      package).
+- [x] **S4** Added the module's first tests (zero `*_test.go` files existed before this section) —
+      `utilities_test.go`/most of `manager_test.go` landed already in Phase 1 (B1/B2/B3/B4
+      regressions) and Phase 2 (C1's concurrent-same-path regression); this phase completed the
+      set per the original prioritization:
+        - `TestManager_Insert_RollsBackOnHandlerError` / `..._Remove_...` / `..._Replace_...`
+          (`manager_test.go`) — a single-threaded (no concurrency) rollback check for each of the
+          three mutation methods: a handler returning an error must leave the in-memory tree, the
+          persisted `ConfigJSON()`, and the version counter completely unchanged.
+        - `query_test.go` (new file) — one subtest per form documented on `Manager.Query`'s own doc
+          comment (direct path, object wildcard, `[*]` all-array-elements, `[N]` specific index,
+          `[?field>N]` filter condition, and the empty/`"/"` root query), plus `QueryOne` (no-match
+          error case), `QueryExists`/`QueryCount`, and `FindAll`. Caught and fixed my own test bug
+          while writing this: a bare numeric path segment (`/users/0/name`) is a *key* lookup in
+          this DSL, not array access — array indexing always needs the `[N]` bracket form; the
+          "direct path" subtest was rewritten to query a plain object field instead of misusing
+          array syntax.
+- [x] *(Explicitly not scheduled, per this section's own recommendation — left alone)* **S5**
+      (splitting `HttpServer`'s two modes into separate types) and **S6** (no CI workflow running
+      `go build`/`go vet`/`go test`) — both still apply, untouched.
 
-### Phase 4 — Cleanliness & structure
+Verified: `go build ./...` + `go vet ./...` clean; `go test -race ./...` — all 13 test functions
+across `manager_test.go`, `query_test.go`, `utilities_test.go` passing; re-ran `examples/basic` and
+`examples/history` end-to-end as a final whole-module regression check after all of Sections 10.1-10.4.
 
-- [ ] **S1** `utilities.go`: `jsonSetByPath` (14), `jsonRemoveByPath` (87), `jsonInsertByPath`
-      (177) share ~90% duplicated "walk to parent map" code. Extract a shared
-      `navigateToParentMap(jsonMap, path) (parent *orderedmap.OrderedMap, lastKey string, err error)`.
-- [ ] **S2** Remove dead commented-out code in `manager.go` (lines 86, 281, 368, 448 — `// return
-      m.config.DeepCopy()` and three `// handlerNode := ...DeepCopy()` lines), or replace with a
-      one-line comment explaining why DeepCopy is intentionally skipped (ties into B5/C1).
-- [ ] **S3** Rename `NewvalidationService` → `NewValidationService` (`validation_service.go:36`,
-      casing typo, currently undiscoverable/unused so low-risk).
-- [ ] **S4** Add a baseline `go test` suite (currently zero `*_test.go` files anywhere) — prioritize
-      `utilities.go` path functions (as B1/B2 regression tests), `Manager` insert/remove/replace +
-      rollback + history (B3 regression), and the `query.go` DSL. Best done *after* Phase 1 so the
-      new tests can assert the fixed behavior.
-- [ ] *(Optional, not recommended to schedule)* S5: consider splitting `httpserver.HttpServer`'s
-      two modes (manager-bound vs generic) into separate types — user previously asked to keep both
-      on one type, so only revisit if that changes.
-- [ ] *(Optional, not recommended to schedule)* S6: no CI (`.github/workflows`) running
-      `go build`/`go vet`/`go test` — process/infra, not a code defect.
+### Noted, not scheduled (from the original plan, still true)
 
-### Verification (once a phase is actually started)
+- Path cache (`manager.go` `rebuildPathCache`) fully rebuilds on every mutation rather than
+  incrementally — only worth acting on if profiling shows it matters.
+- A real P1 performance win would need to also avoid `gojsonschema`'s own internal reparse
+  (`NewGoLoader` instead of a string/bytes loader) and/or replace `Clone()`'s JSON round-trip with a
+  native `orderedmap` deep-copy — both bigger, riskier changes than this section's scope.
 
-- `go build ./...` + `go vet ./...` across the whole module.
-- Re-run all five `examples/*` programs to confirm no behavioral regressions.
-- Phase 1/4: add regression tests for each fixed bug (nil-path input, non-float64 numeric insert,
-  history export round-trip for object values).
-- Phase 3: a quick before/after timing comparison on a moderately sized config.
+## All of Section 10 (Phases 1-4) is now complete
+
+Every phase was implemented, verified against the real library (not just read through), and
+committed as its own commit on `main` (not pushed, per instruction). See each phase's write-up above
+for exact verification detail; `.claude/session.md` has the session-level summary.

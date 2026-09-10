@@ -11,30 +11,36 @@ import (
 	"github.com/iancoleman/orderedmap"
 )
 
-func jsonSetByPath(jsonMap *orderedmap.OrderedMap, path string, value interface{}) error {
+// navigateToParentMap walks all but the last segment of path, descending
+// through objects and (for a segment naming an array) through one numeric
+// index segment, and returns the OrderedMap that directly contains the
+// final path segment, plus that final segment itself. jsonSetByPath/
+// jsonRemoveByPath/jsonInsertByPath previously each carried their own
+// ~90%-identical copy of this exact traversal.
+func navigateToParentMap(jsonMap *orderedmap.OrderedMap, path string) (parent *orderedmap.OrderedMap, lastKey string, err error) {
 	if jsonMap == nil {
-		return errors.New("jsonMap cannot be nil")
+		return nil, "", errors.New("jsonMap cannot be nil")
 	}
 
-	splited_path := strings.Split(path, "/")
-	if len(splited_path) == 0 {
-		return errors.New("invalid path: empty")
+	splitPath := strings.Split(path, "/")
+	if len(splitPath) == 0 {
+		return nil, "", errors.New("invalid path: empty")
 	}
 
 	foundMap := jsonMap
 
-	for i := 0; i < len(splited_path)-1; {
-		if len(splited_path[i]) == 0 {
+	for i := 0; i < len(splitPath)-1; {
+		if len(splitPath[i]) == 0 {
 			i++
 			continue
 		}
 
-		found, present := foundMap.Get(splited_path[i])
+		found, present := foundMap.Get(splitPath[i])
 		if !present {
-			return fmt.Errorf("path element '%s' not found", splited_path[i])
+			return nil, "", fmt.Errorf("path element '%s' not found", splitPath[i])
 		}
 		if found == nil {
-			return fmt.Errorf("path element '%s' is null, cannot traverse further", splited_path[i])
+			return nil, "", fmt.Errorf("path element '%s' is null, cannot traverse further", splitPath[i])
 		}
 
 		k := reflect.TypeOf(found).Kind()
@@ -46,28 +52,28 @@ func jsonSetByPath(jsonMap *orderedmap.OrderedMap, path string, value interface{
 			} else if om, ok := found.(orderedmap.OrderedMap); ok {
 				foundMap = &om
 			} else {
-				return fmt.Errorf("expected OrderedMap at '%s', got %T", splited_path[i], found)
+				return nil, "", fmt.Errorf("expected OrderedMap at '%s', got %T", splitPath[i], found)
 			}
 		case reflect.Slice:
 			s, ok := found.([]interface{})
 			if !ok {
-				return fmt.Errorf("expected []interface{} at '%s'", splited_path[i])
+				return nil, "", fmt.Errorf("expected []interface{} at '%s'", splitPath[i])
 			}
 
-			if i+1 >= len(splited_path) {
-				return errors.New("invalid path: missing index after array")
+			if i+1 >= len(splitPath) {
+				return nil, "", errors.New("invalid path: missing index after array")
 			}
 
-			index, err := strconv.ParseInt(splited_path[i+1], 10, 32)
+			idx, err := strconv.ParseInt(splitPath[i+1], 10, 32)
 			if err != nil {
-				return fmt.Errorf("invalid array index '%s': %w", splited_path[i+1], err)
+				return nil, "", fmt.Errorf("invalid array index '%s': %w", splitPath[i+1], err)
 			}
 
-			if index < 0 || int(index) >= len(s) {
-				return fmt.Errorf("array index %d out of bounds [0,%d)", index, len(s))
+			if idx < 0 || int(idx) >= len(s) {
+				return nil, "", fmt.Errorf("array index %d out of bounds [0,%d)", idx, len(s))
 			}
 
-			found = s[index]
+			found = s[idx]
 			i++ // Skip index element
 
 			if om, ok := found.(*orderedmap.OrderedMap); ok {
@@ -75,95 +81,39 @@ func jsonSetByPath(jsonMap *orderedmap.OrderedMap, path string, value interface{
 			} else if om, ok := found.(orderedmap.OrderedMap); ok {
 				foundMap = &om
 			} else {
-				return fmt.Errorf("expected OrderedMap at array index %d", index)
+				return nil, "", fmt.Errorf("expected OrderedMap at array index %d", idx)
 			}
 		default:
-			return fmt.Errorf("cannot traverse through type '%v' at '%s'", k, splited_path[i])
+			return nil, "", fmt.Errorf("cannot traverse through type '%v' at '%s'", k, splitPath[i])
 		}
 		i++
 	}
 
-	foundMap.Set(splited_path[len(splited_path)-1], value)
+	return foundMap, splitPath[len(splitPath)-1], nil
+}
+
+func jsonSetByPath(jsonMap *orderedmap.OrderedMap, path string, value interface{}) error {
+	parent, lastKey, err := navigateToParentMap(jsonMap, path)
+	if err != nil {
+		return err
+	}
+
+	parent.Set(lastKey, value)
 	return nil
 }
 
 func jsonRemoveByPath(jsonMap *orderedmap.OrderedMap, path string, index int) error {
-	if jsonMap == nil {
-		return errors.New("jsonMap cannot be nil")
+	parent, lastKey, err := navigateToParentMap(jsonMap, path)
+	if err != nil {
+		return err
 	}
 
-	splited_path := strings.Split(path, "/")
-	if len(splited_path) == 0 {
-		return errors.New("invalid path: empty")
-	}
-
-	foundMap := jsonMap
-
-	for i := 0; i < len(splited_path)-1; {
-		if len(splited_path[i]) == 0 {
-			i++
-			continue
-		}
-
-		found, present := foundMap.Get(splited_path[i])
-		if !present {
-			return fmt.Errorf("path element '%s' not found", splited_path[i])
-		}
-		if found == nil {
-			return fmt.Errorf("path element '%s' is null, cannot traverse further", splited_path[i])
-		}
-
-		k := reflect.TypeOf(found).Kind()
-		switch k {
-		case reflect.Map, reflect.Struct:
-			if om, ok := found.(*orderedmap.OrderedMap); ok {
-				foundMap = om
-			} else if om, ok := found.(orderedmap.OrderedMap); ok {
-				foundMap = &om
-			} else {
-				return fmt.Errorf("expected OrderedMap at '%s'", splited_path[i])
-			}
-		case reflect.Slice:
-			s, ok := found.([]interface{})
-			if !ok {
-				return fmt.Errorf("expected []interface{} at '%s'", splited_path[i])
-			}
-
-			if i+1 >= len(splited_path) {
-				return errors.New("invalid path: missing index after array")
-			}
-
-			arrayIndex, err := strconv.ParseInt(splited_path[i+1], 10, 32)
-			if err != nil {
-				return fmt.Errorf("invalid array index '%s': %w", splited_path[i+1], err)
-			}
-
-			if arrayIndex < 0 || int(arrayIndex) >= len(s) {
-				return fmt.Errorf("array index %d out of bounds", arrayIndex)
-			}
-
-			found = s[arrayIndex]
-			i++
-
-			if om, ok := found.(*orderedmap.OrderedMap); ok {
-				foundMap = om
-			} else if om, ok := found.(orderedmap.OrderedMap); ok {
-				foundMap = &om
-			} else {
-				return fmt.Errorf("expected OrderedMap at array index %d", arrayIndex)
-			}
-		default:
-			return fmt.Errorf("cannot traverse through type '%v'", k)
-		}
-		i++
-	}
-
-	found_list, present := foundMap.Get(splited_path[len(splited_path)-1])
+	foundList, present := parent.Get(lastKey)
 	if !present {
-		return fmt.Errorf("path element '%s' not found", splited_path[len(splited_path)-1])
+		return fmt.Errorf("path element '%s' not found", lastKey)
 	}
 
-	list, ok := found_list.([]interface{})
+	list, ok := foundList.([]interface{})
 	if !ok {
 		return errors.New("target is not an array")
 	}
@@ -176,87 +126,22 @@ func jsonRemoveByPath(jsonMap *orderedmap.OrderedMap, path string, index int) er
 	newList = append(newList, list[:index]...)
 	newList = append(newList, list[index+1:]...)
 
-	foundMap.Set(splited_path[len(splited_path)-1], newList)
+	parent.Set(lastKey, newList)
 	return nil
 }
 
 func jsonInsertByPath(jsonMap *orderedmap.OrderedMap, path string, index int, value interface{}) error {
-	if jsonMap == nil {
-		return errors.New("jsonMap cannot be nil")
+	parent, lastKey, err := navigateToParentMap(jsonMap, path)
+	if err != nil {
+		return err
 	}
 
-	splited_path := strings.Split(path, "/")
-	if len(splited_path) == 0 {
-		return errors.New("invalid path: empty")
-	}
-
-	foundMap := jsonMap
-
-	for i := 0; i < len(splited_path)-1; {
-		if len(splited_path[i]) == 0 {
-			i++
-			continue
-		}
-
-		found, present := foundMap.Get(splited_path[i])
-		if !present {
-			return fmt.Errorf("path element '%s' not found", splited_path[i])
-		}
-		if found == nil {
-			return fmt.Errorf("path element '%s' is null, cannot traverse further", splited_path[i])
-		}
-
-		k := reflect.TypeOf(found).Kind()
-		switch k {
-		case reflect.Map, reflect.Struct:
-			if om, ok := found.(*orderedmap.OrderedMap); ok {
-				foundMap = om
-			} else if om, ok := found.(orderedmap.OrderedMap); ok {
-				foundMap = &om
-			} else {
-				return fmt.Errorf("expected OrderedMap at '%s'", splited_path[i])
-			}
-		case reflect.Slice:
-			s, ok := found.([]interface{})
-			if !ok {
-				return fmt.Errorf("expected []interface{} at '%s'", splited_path[i])
-			}
-
-			if i+1 >= len(splited_path) {
-				return errors.New("invalid path: missing index after array")
-			}
-
-			arrayIndex, err := strconv.ParseInt(splited_path[i+1], 10, 32)
-			if err != nil {
-				return fmt.Errorf("invalid array index '%s': %w", splited_path[i+1], err)
-			}
-
-			if arrayIndex < 0 || int(arrayIndex) >= len(s) {
-				return fmt.Errorf("array index %d out of bounds", arrayIndex)
-			}
-
-			found = s[arrayIndex]
-			i++
-
-			if om, ok := found.(*orderedmap.OrderedMap); ok {
-				foundMap = om
-			} else if om, ok := found.(orderedmap.OrderedMap); ok {
-				foundMap = &om
-			} else {
-				return fmt.Errorf("expected OrderedMap at array index %d", arrayIndex)
-			}
-		default:
-			return fmt.Errorf("cannot traverse through type '%v'", k)
-		}
-		i++
-	}
-
-	found_list, present := foundMap.Get(splited_path[len(splited_path)-1])
+	foundList, present := parent.Get(lastKey)
 	if !present {
-		return fmt.Errorf("path element '%s' not found", splited_path[len(splited_path)-1])
+		return fmt.Errorf("path element '%s' not found", lastKey)
 	}
 
-	list, ok := found_list.([]interface{})
+	list, ok := foundList.([]interface{})
 	if !ok {
 		return errors.New("target is not an array")
 	}
@@ -270,7 +155,7 @@ func jsonInsertByPath(jsonMap *orderedmap.OrderedMap, path string, index int, va
 	newList = append(newList, value)
 	newList = append(newList, list[index:]...)
 
-	foundMap.Set(splited_path[len(splited_path)-1], newList)
+	parent.Set(lastKey, newList)
 	return nil
 }
 

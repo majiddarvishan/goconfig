@@ -28,6 +28,117 @@ func newTestManager(t *testing.T, configJSON string) *Manager {
 	return m
 }
 
+// Rollback regression (single-threaded, no concurrency involved - see
+// TestManager_PerPathLocking_ConcurrentSamePath below for the concurrent
+// variant): when a registered handler returns an error, Insert/Remove/
+// Replace must leave the in-memory tree, the persisted config, and the
+// version counter exactly as they were before the call - not partially
+// applied.
+func TestManager_Insert_RollsBackOnHandlerError(t *testing.T) {
+	m := newTestManager(t, `{"items":[{"a":1}]}`)
+	itemsNode, err := m.Config().At("items")
+	if err != nil {
+		t.Fatalf("At(items): %v", err)
+	}
+
+	wantErr := errors.New("handler rejects this insert")
+	if err := m.OnInsert(itemsNode, func(n *Node) error { return wantErr }); err != nil {
+		t.Fatalf("OnInsert: %v", err)
+	}
+
+	versionBefore := m.Version()
+	configBefore := m.ConfigJSON()
+
+	err = m.Insert("/items", 1, map[string]interface{}{"a": 2})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Insert error = %v, want %v", err, wantErr)
+	}
+
+	if m.Version() != versionBefore {
+		t.Errorf("version changed after a rolled-back insert: before=%d after=%d", versionBefore, m.Version())
+	}
+	if m.ConfigJSON() != configBefore {
+		t.Errorf("persisted config changed after a rolled-back insert")
+	}
+
+	arr, _ := itemsNode.GetArray()
+	if len(arr) != 1 {
+		t.Errorf("in-memory array has %d elements after a rolled-back insert, want 1", len(arr))
+	}
+}
+
+func TestManager_Remove_RollsBackOnHandlerError(t *testing.T) {
+	m := newTestManager(t, `{"items":[{"a":1},{"a":2}]}`)
+	itemsNode, err := m.Config().At("items")
+	if err != nil {
+		t.Fatalf("At(items): %v", err)
+	}
+
+	wantErr := errors.New("handler rejects this remove")
+	if err := m.OnRemove(itemsNode, func(n *Node) error { return wantErr }); err != nil {
+		t.Fatalf("OnRemove: %v", err)
+	}
+
+	versionBefore := m.Version()
+	configBefore := m.ConfigJSON()
+
+	if err := m.Remove("/items", 0); !errors.Is(err, wantErr) {
+		t.Fatalf("Remove error = %v, want %v", err, wantErr)
+	}
+
+	if m.Version() != versionBefore {
+		t.Errorf("version changed after a rolled-back remove")
+	}
+	if m.ConfigJSON() != configBefore {
+		t.Errorf("persisted config changed after a rolled-back remove")
+	}
+
+	arr, _ := itemsNode.GetArray()
+	if len(arr) != 2 {
+		t.Errorf("in-memory array has %d elements after a rolled-back remove, want 2", len(arr))
+	}
+}
+
+func TestManager_Replace_RollsBackOnHandlerError(t *testing.T) {
+	m := newTestManager(t, `{"items":[{"a":1}]}`)
+	aNode, err := m.Config().At("items")
+	if err != nil {
+		t.Fatalf("At(items): %v", err)
+	}
+	aNode, err = aNode.At(0)
+	if err != nil {
+		t.Fatalf("At(0): %v", err)
+	}
+	aNode, err = aNode.At("a")
+	if err != nil {
+		t.Fatalf("At(a): %v", err)
+	}
+
+	wantErr := errors.New("handler rejects this replace")
+	if err := m.OnReplace(aNode, func(n *Node) error { return wantErr }); err != nil {
+		t.Fatalf("OnReplace: %v", err)
+	}
+
+	versionBefore := m.Version()
+	configBefore := m.ConfigJSON()
+
+	if err := m.Replace("/items/0/a", 99); !errors.Is(err, wantErr) {
+		t.Fatalf("Replace error = %v, want %v", err, wantErr)
+	}
+
+	if m.Version() != versionBefore {
+		t.Errorf("version changed after a rolled-back replace")
+	}
+	if m.ConfigJSON() != configBefore {
+		t.Errorf("persisted config changed after a rolled-back replace")
+	}
+
+	v, err := aNode.GetInt()
+	if err != nil || v != 1 {
+		t.Errorf("value after rolled-back replace = %v (err=%v), want 1", v, err)
+	}
+}
+
 // B3 regression: history.ChangeEvent.OldValue for an object-typed value must
 // be a plain map[string]interface{}, not the internal map[string]*Node
 // representation (which used to leak as pointer addresses / serialize to

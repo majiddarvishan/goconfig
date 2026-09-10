@@ -33,8 +33,8 @@ type ValidationResponse struct {
 	Message string   `json:"message,omitempty"`
 }
 
-// NewvalidationService creates a new validation service client
-func NewvalidationService(url string, timeout time.Duration) *validationService {
+// NewValidationService creates a new validation service client
+func NewValidationService(url string, timeout time.Duration) *validationService {
 	if timeout == 0 {
 		timeout = 10 * time.Second
 	}
@@ -123,7 +123,7 @@ type customValidator struct {
 	validators map[string][]validatorFunc
 }
 
-// NewcustomValidator creates a new custom validator
+// NewCustomValidator creates a new custom validator
 func NewCustomValidator() *customValidator {
 	return &customValidator{
 		validators: make(map[string][]validatorFunc),

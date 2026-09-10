@@ -345,10 +345,15 @@ func (m *Manager) insertLocked(path string, index int, value interface{}) error 
 	newArr = append(newArr, array[index:]...)
 	*mod.Node = Node{newArr}
 
-	// Call handler after successful persistence
+	// Call the handler with the in-memory mutation already applied but not
+	// yet persisted (setConfig runs below, after this). Passes newNode
+	// directly rather than a DeepCopy - the handler runs with the global
+	// lock released (see the concurrency contract on Manager), and a
+	// concurrent Insert/Remove/Replace on this same path is blocked by the
+	// per-path lock for the duration, so nothing else can mutate this node
+	// out from under the handler during the call.
 	handler := mod.Handler
 	if handler != nil {
-		// handlerNode := newNode.DeepCopy()
 		handlerNode := newNode
 		m.mu.Unlock()
 		err := handler(handlerNode)
@@ -444,9 +449,12 @@ func (m *Manager) removeLocked(path string, index int) error {
 	newArr = append(newArr, array[index+1:]...)
 	*mod.Node = Node{newArr}
 
+	// See insertLocked's comment above the equivalent call - passes
+	// removedNode directly (no DeepCopy) for the same reason: the per-path
+	// lock (see Manager's concurrency contract) already prevents anything
+	// else from touching this path while the handler runs unlocked.
 	handler := mod.Handler
 	if handler != nil {
-		// handlerNode := removedNode.DeepCopy()
 		handlerNode := removedNode
 		m.mu.Unlock()
 		err := handler(handlerNode)
@@ -535,9 +543,9 @@ func (m *Manager) replaceLocked(path string, value interface{}) error {
 	// Mutate
 	*mod.Node = *newNode
 
+	// See insertLocked's comment above the equivalent call - same reasoning.
 	handler := mod.Handler
 	if handler != nil {
-		// handlerNode := mod.Node.DeepCopy()
 		handlerNode := mod.Node
 		m.mu.Unlock()
 		err := handler(handlerNode)
