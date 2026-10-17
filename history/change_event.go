@@ -8,7 +8,7 @@ import (
 // ChangeEvent represents a single modification to the configuration
 type ChangeEvent struct {
 	Timestamp time.Time   `json:"timestamp"`
-	Operation string      `json:"operation"` // "insert", "remove", "replace"
+	Operation string      `json:"operation"` // "insert", "remove", "replace", "update"
 	Path      string      `json:"path"`
 	Index     *int        `json:"index,omitempty"`
 	OldValue  interface{} `json:"old_value,omitempty"`

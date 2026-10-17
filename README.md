@@ -15,6 +15,14 @@ go get -u github.com/majiddarvishan/goconfig
 - Load config + JSON Schema from a file or an in-memory string (`FileSource`, `StrSource`)
 - Live mutation - insert/remove/replace on registered paths, validated against the schema on
   every change, with automatic rollback on failure
+- `Update(path, index, value)` - replace one item of an array registered both insertable and
+  removable, through the existing OnRemove/OnInsert handlers (no new handler needed); the schema
+  is checked on the final state only, so `minItems` doesn't get in the way
+- `Batch(ops, dryRun)` - several insert/remove/replace/update operations as one unit: one schema
+  check on the final state, and if any handler fails every applied operation is undone through
+  its inverse; `dryRun` checks without changing anything. Over HTTP: `{"op":"batch",
+  "operations":[...], "dry_run":false}`, plus `"op":"update"`; `GET /config` lists `updatable`
+  paths. Same protocol as the C++ pa::config library (>= 1.2.0)
 - Optimistic-locking version counter and an in-memory change history (audit log)
 - A small JSONPath-like query language for reading the config tree
 - Custom validators and an optional external validation service

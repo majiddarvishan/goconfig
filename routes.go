@@ -22,8 +22,8 @@ type Route struct {
 }
 
 // GetRoutes returns the config admin API as routes: GET fetches the current
-// config/schema/modifiable paths, POST performs insert/remove/replace with
-// optimistic-locking via "version". Authentication and CORS are transport
+// config/schema/modifiable paths, POST performs insert/remove/replace/update,
+// or an atomic "batch" of them, with optimistic-locking via "version". Authentication and CORS are transport
 // concerns left to whatever serves these routes.
 func (m *Manager) GetRoutes() []Route {
 	return []Route{
@@ -82,6 +82,14 @@ func (m *Manager) serveConfigPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if op == "batch" {
+		if !m.checkRouteVersion(w, bodyJSON) {
+			return
+		}
+		m.serveBatch(w, bodyJSON)
+		return
+	}
+
 	path, err := getRouteString(bodyJSON, "path")
 	if err != nil {
 		writeRouteError(w, http.StatusBadRequest, err.Error())
@@ -95,21 +103,8 @@ func (m *Manager) serveConfigPost(w http.ResponseWriter, r *http.Request) {
 
 	value, hasValue := bodyJSON.Get("value")
 
-	// Version-based optimistic locking (better than hash)
-	var expectedVersion int64
-	if versionVal, ok := bodyJSON.Get("version"); ok {
-		versionFloat, ok := versionVal.(float64)
-		if !ok {
-			writeRouteError(w, http.StatusBadRequest, "version must be a number")
-			return
-		}
-		expectedVersion = int64(versionFloat)
-
-		if current := m.Version(); current != expectedVersion {
-			writeRouteError(w, http.StatusConflict,
-				fmt.Sprintf("version mismatch: expected %d, current %d", expectedVersion, current))
-			return
-		}
+	if !m.checkRouteVersion(w, bodyJSON) {
+		return
 	}
 
 	switch op {
@@ -145,6 +140,21 @@ func (m *Manager) serveConfigPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := m.Replace(path, value); err != nil {
+			writeRouteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+	case "update":
+		if !hasValue {
+			writeRouteError(w, http.StatusBadRequest, "value is required for update")
+			return
+		}
+		index, err := getRouteIndex(bodyJSON)
+		if err != nil {
+			writeRouteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := m.Update(path, index, value); err != nil {
 			writeRouteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -192,6 +202,7 @@ func (m *Manager) buildConfigState() (*orderedmap.OrderedMap, error) {
 	paths.Set("insertable", m.InsertablePaths())
 	paths.Set("removable", m.RemovablePaths())
 	paths.Set("replaceable", m.ReplaceablePaths())
+	paths.Set("updatable", m.UpdatablePaths())
 
 	out := orderedmap.New()
 	out.Set("modifiable_paths", paths)
@@ -260,4 +271,106 @@ func getRouteIndex(m *orderedmap.OrderedMap) (int, error) {
 		return 0, fmt.Errorf("'index' must be non-negative")
 	}
 	return int(f), nil
+}
+
+// checkRouteVersion enforces the optional "version" field (optimistic
+// locking); it writes the error response and returns false on a mismatch.
+func (m *Manager) checkRouteVersion(w http.ResponseWriter, bodyJSON *orderedmap.OrderedMap) bool {
+	versionVal, ok := bodyJSON.Get("version")
+	if !ok {
+		return true
+	}
+	versionFloat, ok := versionVal.(float64)
+	if !ok {
+		writeRouteError(w, http.StatusBadRequest, "version must be a number")
+		return false
+	}
+	if current := m.Version(); current != int64(versionFloat) {
+		writeRouteError(w, http.StatusConflict,
+			fmt.Sprintf("version mismatch: expected %d, current %d", int64(versionFloat), current))
+		return false
+	}
+	return true
+}
+
+// serveBatch handles {"op":"batch","operations":[...],"dry_run":bool}.
+func (m *Manager) serveBatch(w http.ResponseWriter, bodyJSON *orderedmap.OrderedMap) {
+	raw, ok := bodyJSON.Get("operations")
+	list, isList := raw.([]interface{})
+	if !ok || !isList {
+		writeRouteError(w, http.StatusBadRequest, "'operations' must be a list")
+		return
+	}
+
+	ops := make([]Operation, 0, len(list))
+	for i, item := range list {
+		var opJSON *orderedmap.OrderedMap
+		switch v := item.(type) {
+		case orderedmap.OrderedMap:
+			opJSON = &v
+		case *orderedmap.OrderedMap:
+			opJSON = v
+		default:
+			writeRouteError(w, http.StatusBadRequest, fmt.Sprintf("operation #%d must be an object", i))
+			return
+		}
+
+		op, err := parseRouteOperation(opJSON)
+		if err != nil {
+			writeRouteError(w, http.StatusBadRequest, fmt.Sprintf("operation #%d: %s", i, err))
+			return
+		}
+		ops = append(ops, op)
+	}
+
+	dryRun := false
+	if v, ok := bodyJSON.Get("dry_run"); ok {
+		if dryRun, ok = v.(bool); !ok {
+			writeRouteError(w, http.StatusBadRequest, "'dry_run' must be a boolean")
+			return
+		}
+	}
+
+	if err := m.Batch(ops, dryRun); err != nil {
+		writeRouteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	data, err := m.buildConfigState()
+	if err != nil {
+		writeRouteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to build config: %s", err))
+		return
+	}
+	writeRouteSuccess(w, data)
+}
+
+func parseRouteOperation(opJSON *orderedmap.OrderedMap) (Operation, error) {
+	opName, err := getRouteString(opJSON, "op")
+	if err != nil {
+		return Operation{}, err
+	}
+	path, err := getRouteString(opJSON, "path")
+	if err != nil {
+		return Operation{}, err
+	}
+	op := Operation{Op: opName, Path: path}
+
+	switch opName {
+	case "insert", "remove", "update":
+		if op.Index, err = getRouteIndex(opJSON); err != nil {
+			return Operation{}, err
+		}
+	case "replace":
+	default:
+		return Operation{}, fmt.Errorf("unsupported operation: %s", opName)
+	}
+
+	if opName != "remove" {
+		value, ok := opJSON.Get("value")
+		if !ok {
+			return Operation{}, fmt.Errorf("value is required for %s", opName)
+		}
+		op.Value = value
+	}
+	return op, nil
 }
