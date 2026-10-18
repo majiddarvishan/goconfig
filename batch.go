@@ -155,6 +155,20 @@ func (m *Manager) batch(ops []Operation, dryRun, single bool) error {
 		event.Version = m.version
 		m.addHistoryEvent(event)
 	}
+
+	// Batch may replace the same path several times; notify each committed
+	// path once, with its final persisted value. No notifications run on
+	// validation failures or rolled-back persistence attempts.
+	notified := make(map[string]bool)
+	for _, op := range ops {
+		if op.Op != "replace" || notified[op.Path] {
+			continue
+		}
+		notified[op.Path] = true
+		if mod, err := m.findModifiableLocked(Replaceable, op.Path); err == nil {
+			m.notifyReplaceCommittedLocked(mod.Node)
+		}
+	}
 	return nil
 }
 

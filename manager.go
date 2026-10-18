@@ -12,6 +12,12 @@ import (
 
 type handler_t func(*Node) error
 
+// committedReplaceListener runs only after persistence succeeds.
+type committedReplaceListener struct {
+	node    *Node
+	handler func(*Node)
+}
+
 type modifiableType int
 
 const (
@@ -53,10 +59,11 @@ type modifiable struct {
 type Manager struct {
 	mu sync.RWMutex
 
-	source      ISource
-	config      *Node
-	modifiables []modifiable
-	version     int64
+	source                    ISource
+	config                    *Node
+	modifiables               []modifiable
+	committedReplaceListeners []committedReplaceListener
+	version                   int64
 
 	// Path caching
 	pathCache      map[*Node]string
@@ -93,15 +100,16 @@ func NewManager(source ISource) (*Manager, error) {
 	}
 
 	m := &Manager{
-		source:          source,
-		config:          root,
-		modifiables:     make([]modifiable, 0),
-		version:         1,
-		pathCache:       make(map[*Node]string),
-		pathCacheValid:  false,
-		history:         history.NewChangeHistory(1000),
-		historyEnabled:  true,
-		customValidator: NewCustomValidator(),
+		source:                    source,
+		config:                    root,
+		modifiables:               make([]modifiable, 0),
+		committedReplaceListeners: make([]committedReplaceListener, 0),
+		version:                   1,
+		pathCache:                 make(map[*Node]string),
+		pathCacheValid:            false,
+		history:                   history.NewChangeHistory(1000),
+		historyEnabled:            true,
+		customValidator:           NewCustomValidator(),
 	}
 
 	if err := validate(source.getConfig(), source.getSchema()); err != nil {
@@ -577,6 +585,10 @@ func (m *Manager) replaceLocked(path string, value interface{}) error {
 		Version:   m.version,
 	})
 
+	// Notify external consumers only after the change is persisted.
+	// The per-path lock is still held while notifications are delivered.
+	m.notifyReplaceCommittedLocked(mod.Node)
+
 	return nil
 }
 
@@ -657,6 +669,63 @@ func (m *Manager) OnReplace(node *Node, handler handler_t) error {
 	})
 
 	return nil
+}
+
+// OnReplaceCommitted registers an observer for a successfully persisted
+// replacement of the given node. Unlike OnReplace, this observer is not a
+// validator, cannot reject the change and is invoked after persistence and
+// version/history updates. All matching observers run in registration order.
+//
+// Replace must still be enabled separately using OnReplace. Observers also
+// run once per changed path after a successful Batch with replace operations;
+// no observer runs on rejected or failed persistence.
+//
+// The Manager retains registrations until it is discarded. The callback
+// must treat the Node as read-only and must not mutate the same path: the
+// per-path mutation lock stays held while observers run. Callbacks may read
+// the Manager or mutate unrelated paths.
+//
+// For persistent external side effects, use a pre-commit OnReplace validator
+// without side effects, and apply the validated value here.
+func (m *Manager) OnReplaceCommitted(node *Node, handler func(*Node)) error {
+	if node == nil {
+		return errors.New("node cannot be nil")
+	}
+	if handler == nil {
+		return errors.New("committed replacement handler cannot be nil")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, err := m.findAndSanitizeNodePathLocked(node); err != nil {
+		return err
+	}
+	m.committedReplaceListeners = append(m.committedReplaceListeners, committedReplaceListener{
+		node: node, handler: handler,
+	})
+	return nil
+}
+
+// notifyReplaceCommittedLocked is called with m.mu and the target path lock
+// held. It snapshots observers before unlocking, so listeners can register
+// additional observers without modifying the current notification set.
+func (m *Manager) notifyReplaceCommittedLocked(node *Node) {
+	observers := make([]func(*Node), 0)
+	for _, observer := range m.committedReplaceListeners {
+		if observer.node == node {
+			observers = append(observers, observer.handler)
+		}
+	}
+	if len(observers) == 0 {
+		return
+	}
+
+	m.mu.Unlock()
+	for _, observer := range observers {
+		observer(node)
+	}
+	m.mu.Lock()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
