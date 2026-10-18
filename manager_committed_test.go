@@ -190,7 +190,7 @@ func TestOnReplaceCommittedValidationAndRegistration(t *testing.T) {
 	}
 }
 // Batch failure must not publish post-commit notifications, even if the
- // validation callback accepted the replacement before persistence failed.
+// validation callback accepted the replacement before persistence failed.
 func TestOnReplaceCommittedBatchPersistenceFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "batch.json")
 	original := `{"level":"info"}`
@@ -272,4 +272,3 @@ func TestOnReplaceCommittedRegistrationDuringNotification(t *testing.T) {
 		t.Fatalf("second notification delivered primary=%d secondary=%d, want 2/1", primaryCalls, secondaryCalls)
 	}
 }
-
