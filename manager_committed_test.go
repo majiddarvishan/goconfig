@@ -189,6 +189,7 @@ func TestOnReplaceCommittedValidationAndRegistration(t *testing.T) {
 		t.Fatal("committed-only observer unexpectedly made the path replaceable")
 	}
 }
+
 // Batch failure must not publish post-commit notifications, even if the
 // validation callback accepted the replacement before persistence failed.
 func TestOnReplaceCommittedBatchPersistenceFailure(t *testing.T) {
