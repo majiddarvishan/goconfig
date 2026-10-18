@@ -33,25 +33,29 @@ go get -u github.com/majiddarvishan/goconfig
 
 ## Post-commit replace notifications
 
-Use \`OnReplace\` for validation or pre-commit work. The legacy \`OnReplace\`
+Use `OnReplace` for validation or pre-commit work. The legacy `OnReplace`
 callback runs before persistence and only the first matching registration is
 used, so it must not be relied upon as a multi-listener event bus or a
 transactional post-persistence hook.
 
-\`OnReplaceCommitted\` is an additive API for side effects that must only
+`OnReplaceCommitted` is an additive API for side effects that must only
 happen once persistence has succeeded. It broadcasts to all observers
 registered for the same node, in registration order; observers cannot reject
 the committed update:
 
-\`\`\`go
+```go
 // The validation callback must not change application state.
 if err := manager.OnReplace(levelNode, func(node *goconfig.Node) error {
     value, err := node.GetString()
     if err != nil {
         return err
     }
-    _, err = parseApplicationLevel(value)
-    return err
+    switch value {
+    case "debug", "info", "warn", "error":
+        return nil
+    default:
+        return fmt.Errorf("unsupported level %q", value)
+    }
 }); err != nil {
     return err
 }
@@ -63,18 +67,17 @@ if err := manager.OnReplaceCommitted(levelNode, func(node *goconfig.Node) {
 }); err != nil {
     return err
 }
-\`\`\`
+```
 
 A post-commit callback observes the committed node, persisted source, and
-updated Manager version/history. For a successful \`Batch\`, each replaced path
+updated Manager version/history. For a successful `Batch`, each replaced path
 is notified once with its final value; dry-runs and failed mutations notify
 nobody. Same-path mutation from a callback is unsupported because the path
 lock remains held. Registrations live as long as the Manager; this API does
 not currently provide deregistration.
 
-This change is available only in source until a new \`goconfig\` release is
-tagged. Consumers pinned to \`v1.6.0\` do not have \`OnReplaceCommitted\`.
-
+This change is available only in source until a new `goconfig` release is
+tagged. Consumers pinned to `v1.6.0` do not have `OnReplaceCommitted`.
 
 ## Examples
 
