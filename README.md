@@ -30,6 +30,52 @@ go get -u github.com/majiddarvishan/goconfig
   package - `goconfig.Manager` has no HTTP dependency at all, so using it alone pulls in nothing
   HTTP-related
 
+
+## Post-commit replace notifications
+
+Use \`OnReplace\` for validation or pre-commit work. The legacy \`OnReplace\`
+callback runs before persistence and only the first matching registration is
+used, so it must not be relied upon as a multi-listener event bus or a
+transactional post-persistence hook.
+
+\`OnReplaceCommitted\` is an additive API for side effects that must only
+happen once persistence has succeeded. It broadcasts to all observers
+registered for the same node, in registration order; observers cannot reject
+the committed update:
+
+\`\`\`go
+// The validation callback must not change application state.
+if err := manager.OnReplace(levelNode, func(node *goconfig.Node) error {
+    value, err := node.GetString()
+    if err != nil {
+        return err
+    }
+    _, err = parseApplicationLevel(value)
+    return err
+}); err != nil {
+    return err
+}
+
+// Called only after a successful Replace or a successful Batch commit.
+if err := manager.OnReplaceCommitted(levelNode, func(node *goconfig.Node) {
+    value, _ := node.GetString() // already validated
+    logger.SetLevelString(value)
+}); err != nil {
+    return err
+}
+\`\`\`
+
+A post-commit callback observes the committed node, persisted source, and
+updated Manager version/history. For a successful \`Batch\`, each replaced path
+is notified once with its final value; dry-runs and failed mutations notify
+nobody. Same-path mutation from a callback is unsupported because the path
+lock remains held. Registrations live as long as the Manager; this API does
+not currently provide deregistration.
+
+This change is available only in source until a new \`goconfig\` release is
+tagged. Consumers pinned to \`v1.6.0\` do not have \`OnReplaceCommitted\`.
+
+
 ## Examples
 
 Runnable, self-contained examples live under [`examples/`](examples/). Run any of them with
