@@ -59,11 +59,11 @@ type modifiable struct {
 type Manager struct {
 	mu sync.RWMutex
 
-	source      ISource
-	config      *Node
-	modifiables []modifiable
+	source                    ISource
+	config                    *Node
+	modifiables               []modifiable
 	committedReplaceListeners []committedReplaceListener
-	version     int64
+	version                   int64
 
 	// Path caching
 	pathCache      map[*Node]string
@@ -100,16 +100,16 @@ func NewManager(source ISource) (*Manager, error) {
 	}
 
 	m := &Manager{
-		source:          source,
-		config:          root,
-		modifiables:     make([]modifiable, 0),
+		source:                    source,
+		config:                    root,
+		modifiables:               make([]modifiable, 0),
 		committedReplaceListeners: make([]committedReplaceListener, 0),
-		version:         1,
-		pathCache:       make(map[*Node]string),
-		pathCacheValid:  false,
-		history:         history.NewChangeHistory(1000),
-		historyEnabled:  true,
-		customValidator: NewCustomValidator(),
+		version:                   1,
+		pathCache:                 make(map[*Node]string),
+		pathCacheValid:            false,
+		history:                   history.NewChangeHistory(1000),
+		historyEnabled:            true,
+		customValidator:           NewCustomValidator(),
 	}
 
 	if err := validate(source.getConfig(), source.getSchema()); err != nil {
